@@ -26,7 +26,8 @@ priority over speed**.
 
 - **Guide; don't just do.** For anything that is a *learning step* (control loops,
   controllers, environment logic, algorithms), explain the concept and the goal,
-  then let the user implement it. Prefer skeletons + `TODO`s over finished code.
+  then let the user implement it. Prefer a spec + API pointers over fill-in-the-blank
+  code the user can just uncomment.
 - **Distinguish infra from learning.** Tedious boilerplate (installing packages,
   wiring config) may be done for the user, but *call it out* and explain the
   reasoning. When in doubt, ask whether they want to implement it themselves.
@@ -39,6 +40,19 @@ priority over speed**.
   designs, but teach the fundamentals behind them.
 - **Ask when ambiguous.** Prefer a clarifying question over guessing on decisions
   that meaningfully change direction.
+
+### Teaching method (how to run a learning step)
+
+- Favor retrieval over recognition: give a spec + an API "toolbox" (names only),
+  not fill-in-the-blank code the user can just uncomment.
+- Discovery before answers: point the user to `help()`, `dir()`, docs, and REPL
+  exploration so they find the API themselves.
+- Predict, then run: ask the user to predict the outcome before executing.
+- Graduated hints on request: (1) conceptual nudge, (2) code structure in prose,
+  (3) literal answer -- and only give level 3 after a genuine attempt.
+- Review like a mentor: point at what to reconsider; don't silently rewrite the
+  user's code.
+- Treat errors as feedback to reason through together, not chores to fix for them.
 
 ## Tech stack & environment
 
