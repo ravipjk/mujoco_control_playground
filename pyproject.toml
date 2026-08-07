@@ -1,0 +1,42 @@
+# ---- Section 1: WHAT this project is, and WHAT it depends on -------------
+[project]
+name = "mujoco-control-playground"   # the project's distribution name (hyphens ok here)
+version = "0.1.0"                     # semantic version: MAJOR.MINOR.PATCH
+description = "A pedagogical MuJoCo playground for swapping controllers into robots."
+readme = "README.md"                 # long description comes from this file
+requires-python = ">=3.12,<3.13"     # we pin 3.12 (see note below)
+
+# The list of third-party packages we need. ">=" means "this version or newer".
+# We deliberately DON'T pin exact versions here; the lockfile (Step 3) does that.
+dependencies = [
+    "mujoco>=3.2",              # the physics engine + Python bindings
+    "gymnasium>=1.0",          # standard RL environment interface
+    "stable-baselines3>=2.4",  # RL algorithms (PPO, SAC, ...), used later
+    "torch>=2.4",              # neural nets / GPU; SB3 is built on it
+    "numpy>=1.26",             # arrays: the lingua franca of scientific Python
+    "scipy>=1.13",             # linear algebra (we'll use it for LQR)
+    "matplotlib>=3.8",         # plotting
+    "imageio[ffmpeg]>=2.34",   # writing mp4 videos of rollouts
+    "mediapy>=1.2",            # convenient image/video display in notebooks
+    "tqdm>=4.66",              # progress bars
+]
+
+# ---- Section 2: HOW to build this into an installable package ------------
+[build-system]
+requires = ["hatchling"]           # the tool that builds our package
+build-backend = "hatchling.build"  # its entry point
+
+# Tell the build tool that our importable code lives under src/robolab
+[tool.hatch.build.targets.wheel]
+packages = ["src/robolab"]
+
+# ---- Section 3: tool-specific config (here: uv) --------------------------
+# Pull `torch` from NVIDIA's CUDA-12.4 wheel index so it uses your RTX 4080,
+# instead of the default CPU-only build on PyPI.
+[[tool.uv.index]]
+name = "pytorch-cu124"
+url = "https://download.pytorch.org/whl/cu124"
+explicit = true                    # only used by packages that opt in (below)
+
+[tool.uv.sources]
+torch = [{ index = "pytorch-cu124" }]

@@ -1,0 +1,22 @@
+# Python bytecode & build artifacts
+__pycache__/
+*.py[cod]
+*.egg-info/
+build/
+dist/
+
+# Virtual environment (recreate with `uv sync`)
+.venv/
+
+# Jupyter checkpoints
+.ipynb_checkpoints/
+
+# Generated outputs (videos, plots, logs, RL checkpoints)
+outputs/
+runs/
+*.mp4
+*.png
+*.zip
+
+# OS / editor cruft
+.DS_Store
