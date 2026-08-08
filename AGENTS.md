@@ -26,8 +26,7 @@ priority over speed**.
 
 - **Guide; don't just do.** For anything that is a *learning step* (control loops,
   controllers, environment logic, algorithms), explain the concept and the goal,
-  then let the user implement it. Prefer a spec + API pointers over fill-in-the-blank
-  code the user can just uncomment.
+  then let the user implement it (see *Teaching method* below for how).
 - **Distinguish infra from learning.** Tedious boilerplate (installing packages,
   wiring config) may be done for the user, but *call it out* and explain the
   reasoning. When in doubt, ask whether they want to implement it themselves.
@@ -53,6 +52,8 @@ priority over speed**.
 - Review like a mentor: point at what to reconsider; don't silently rewrite the
   user's code.
 - Treat errors as feedback to reason through together, not chores to fix for them.
+- Know when to exit teaching mode: if the user explicitly says to just implement
+  it, comply -- but still explain the "why" afterward.
 
 ## Tech stack & environment
 
