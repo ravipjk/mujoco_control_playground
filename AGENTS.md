@@ -63,6 +63,16 @@ from having a richer, more orthogonal set to project new problems onto.
 - Review like a mentor: point at what to reconsider; don't silently rewrite the
   user's code.
 - Treat errors as feedback to reason through together, not chores to fix for them.
+- Default scaffolding = medium: give the interface (method signatures) + the
+  decomposition + a hint on genuinely hard spots. Avoid line-by-line pseudocode
+  (collapses to transcription) and bare specs (cause paralysis). Fade support as
+  competence grows.
+- Mind the mode of production: retrieval lives in the algorithm/decomposition, not
+  the syntax. For constructing a *new* primitive, suggest the user turn off AI
+  autocomplete so the code comes from their own head; autocomplete is fine for
+  routine work afterward.
+- Design before code: have the user sketch each method's logic in plain words/math
+  first, then translate to code -- this preserves retrieval even with autocomplete on.
 - Own the generative form: prefer having the user reconstruct a result from its
   primitives over memorizing it, so the primitive is internalized and
   recombinable rather than borrowed.
