@@ -25,12 +25,12 @@ class CartpoleEnv(MujocoRobotEnv):
     def _get_reward(self, action):
         # +1 per step the pole is still up (a natural "survival" reward for later RL).
         if abs(self.data.qpos[1]) < self.angle_limit:
-            reward = 1
+            reward = 1.0
         else:
-            reward = 0
-        return reward
+            reward = 0.0
+        return float(reward)
 
 
     def _get_terminated(self):
         # True once |pole_angle| exceeds self.angle_limit.
-        return abs(self.data.qpos[1]) > self.angle_limit
+        return bool(abs(self.data.qpos[1]) > self.angle_limit)

@@ -9,16 +9,17 @@ requires-python = ">=3.12,<3.13"     # we pin 3.12 (see note below)
 # The list of third-party packages we need. ">=" means "this version or newer".
 # We deliberately DON'T pin exact versions here; the lockfile (Step 3) does that.
 dependencies = [
-    "mujoco>=3.2",              # the physics engine + Python bindings
-    "gymnasium>=1.0",          # standard RL environment interface
-    "stable-baselines3>=2.4",  # RL algorithms (PPO, SAC, ...), used later
-    "torch>=2.4",              # neural nets / GPU; SB3 is built on it
-    "numpy>=1.26",             # arrays: the lingua franca of scientific Python
-    "scipy>=1.13",             # linear algebra (we'll use it for LQR)
-    "matplotlib>=3.8",         # plotting
-    "imageio[ffmpeg]>=2.34",   # writing mp4 videos of rollouts
-    "mediapy>=1.2",            # convenient image/video display in notebooks
-    "tqdm>=4.66",              # progress bars
+    "mujoco>=3.2", # the physics engine + Python bindings
+    "gymnasium>=1.0", # standard RL environment interface
+    "stable-baselines3>=2.4", # RL algorithms (PPO, SAC, ...), used later
+    "torch>=2.4", # neural nets / GPU; SB3 is built on it
+    "numpy>=1.26", # arrays: the lingua franca of scientific Python
+    "scipy>=1.13", # linear algebra (we'll use it for LQR)
+    "matplotlib>=3.8", # plotting
+    "imageio[ffmpeg]>=2.34", # writing mp4 videos of rollouts
+    "mediapy>=1.2", # convenient image/video display in notebooks
+    "tqdm>=4.66", # progress bars
+    "tensorboard>=2.21.0",
 ]
 
 # ---- Section 2: HOW to build this into an installable package ------------
