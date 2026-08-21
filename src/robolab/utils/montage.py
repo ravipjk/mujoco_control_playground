@@ -59,6 +59,13 @@ class LearningMontageCallback(BaseCallback):
 
     def _on_training_start(self):
         self._render_env = self.env_fn()
+        # On a RESUME (learn(reset_num_timesteps=False)) num_timesteps starts high,
+        # but our schedule starts at _next_record=0. Without this, _on_step "catches
+        # up" the 0-based schedule and dumps a burst of duplicate snapshots (one per
+        # step) until it passes num_timesteps. Anchor the schedule to now so a resume
+        # records a single baseline snapshot, then every record_freq thereafter.
+        if self._next_record < self.num_timesteps:
+            self._next_record = self.num_timesteps
 
     def _on_step(self):
         if self.num_timesteps >= self._next_record:

@@ -216,3 +216,71 @@ reward) at the **price of sample efficiency and guarantees**. LQR gives a
 certificate and a matrix in milliseconds *if* the world is linear and known. RL
 gives a controller for a world you can only poke at - but needs a million pokes
 and can't prove it's right.
+
+---
+
+## Part 4 - SAC in depth (off-policy, maximum-entropy)
+
+PPO was our on-policy workhorse. SAC (Soft Actor-Critic, Haarnoja 2018) is the
+other pillar of continuous control, and it differs from PPO on almost every axis.
+
+### The maximum-entropy objective
+
+Standard RL maximizes expected return. SAC maximizes return **plus policy
+entropy**:
+
+    J(pi) = sum_t E[ r_t + alpha * H(pi(.|s_t)) ]
+
+The extra term rewards the policy for staying **as random as it can while still
+succeeding**. Consequences:
+- **Exploration is built in** - no separate epsilon or action noise schedule.
+- **Robustness** - it learns a *distribution* of good actions, not one brittle
+  path, so it degrades gracefully under perturbation.
+- **alpha (temperature)** trades off reward vs randomness. Modern SAC (and SB3's
+  `ent_coef="auto"`) **auto-tunes** alpha to hit a target entropy, so you rarely
+  set it by hand.
+
+### The machinery (why it's sample-efficient but heavier per step)
+
+| Piece | What it does | Contrast with PPO |
+|---|---|---|
+| **Replay buffer** | stores millions of past transitions, reused many times | PPO discards data after each update (on-policy) |
+| **Off-policy** | learns from data any old policy generated | PPO must use current-policy data |
+| **Twin Q critics** | two Q-nets, take the min -> fights overestimation | PPO has one value critic |
+| **Target networks** | slowly-tracking (`tau`) copies for stable Q targets | PPO has none |
+| **Squashed Gaussian actor** | tanh-bounded stochastic policy | PPO also stochastic, but updated by clipped ratio |
+
+Net effect: SAC extracts far more learning **per environment step** (good when
+env steps are precious, e.g. real robots), but does a gradient step (or several)
+**every** env step, so it's more **compute-per-step** and has more knobs.
+
+### On-policy vs off-policy, concretely
+
+- **PPO**: collect a big batch with the current policy (parallel envs shine),
+  do a few epochs over it, throw it away. Stable, forgiving, sample-hungry.
+- **SAC**: take one step, push it to the buffer, sample a random minibatch,
+  update. Runs happily with **one env**; parallelism helps less. Sample-frugal,
+  finickier.
+
+### SB3 knobs that matter
+
+- `buffer_size` - replay capacity (RAM-heavy: each transition stores obs twice).
+- `learning_starts` - warm-up steps of pure exploration before training begins.
+- `batch_size`, `tau` (target smoothing), `gamma`.
+- `train_freq` / `gradient_steps` - how often and how many updates per env step.
+- `ent_coef="auto"` - auto-temperature (recommended default).
+
+### PPO vs SAC on the rat (fill in after your runs)
+
+| Metric | PPO (scripts/13) | SAC (scripts/15) |
+|---|---|---|
+| Env steps to a gait | ___ | ___ |
+| Wall-clock to a gait | ___ | ___ |
+| Final ep_rew_mean | ___ | ___ |
+| Gait quality (subjective) | ___ | ___ |
+| Stability of training | ___ | ___ |
+
+Hypothesis to test: SAC reaches a gait in **fewer environment steps** but each
+step costs more wall-clock; PPO is steadier and parallelizes better on our
+CPU-bound MuJoCo physics. Whether that nets out faster on *your* machine is the
+experiment.

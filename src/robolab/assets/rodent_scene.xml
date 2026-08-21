@@ -1,0 +1,20 @@
+<mujoco model="rodent_scene">
+  <!-- Wraps the dm_control rat (fixed-base in its own file) into a standalone
+       scene: a floor to walk on, a light, and a skybox. The rat's torso now has
+       a <freejoint/>, so the whole body is free to fall and locomote.
+       meshdir points at the rodent/ subfolder so the skin asset resolves. -->
+  <compiler angle="radian" meshdir="rodent"/>
+
+  <include file="rodent/rodent.xml"/>
+
+  <asset>
+    <texture name="skybox" type="skybox" builtin="gradient" rgb1="0.3 0.5 0.7" rgb2="0 0 0" width="512" height="512"/>
+    <texture name="grid" type="2d" builtin="checker" rgb1="0.2 0.3 0.4" rgb2="0.1 0.15 0.2" width="512" height="512" mark="edge" markrgb="0.8 0.8 0.8"/>
+    <material name="grid" texture="grid" texrepeat="12 12" reflectance="0.1"/>
+  </asset>
+
+  <worldbody>
+    <light name="scene_light" pos="0 0 1.5" dir="0 0 -1" diffuse="0.8 0.8 0.8" specular="0.1 0.1 0.1"/>
+    <geom name="floor" type="plane" size="5 5 0.1" material="grid" contype="1" conaffinity="1" condim="3"/>
+  </worldbody>
+</mujoco>
