@@ -44,9 +44,11 @@ def main():
                     help="discount factor. 0.99 (default) -> ~2 s effective horizon; "
                          "0.999 -> ~20 s (whole episode) to value longevity/sustained "
                          "gait. Buffer-safe, so it can also change on a resume.")
+    ap.add_argument("--steps", type=int, default=1_000_000, metavar="N",
+                    help="total training timesteps (default 1,000,000).")
     args = ap.parse_args()
     env = make_cpg_env()
-    print(f"gate_use_hands={GATE_USE_HANDS}  gamma={args.gamma}  "
+    print(f"gate_use_hands={GATE_USE_HANDS}  gamma={args.gamma}  steps={args.steps:,}  "
           f"obs dim={env.observation_space.shape}  act dim={env.action_space.shape}")
 
     model = SAC(
@@ -99,7 +101,7 @@ def main():
             verbose=1,
         ))
 
-    model.learn(total_timesteps=1_000_000,
+    model.learn(total_timesteps=args.steps,
                 callback=CallbackList(callbacks))
     model.save(f"outputs/sac_rodent_cpg_{tag}")
     # SAC is off-policy: the replay buffer IS most of the learned experience. Save
