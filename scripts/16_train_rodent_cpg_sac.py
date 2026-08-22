@@ -27,6 +27,7 @@ from _rodent_cfg import make_cpg_env, GATE_USE_HANDS, CPG_TERM_KEYS
 from stable_baselines3 import SAC
 from stable_baselines3.common.callbacks import CheckpointCallback, CallbackList
 
+from robolab.utils.huber_sac import HuberSAC
 from robolab.utils.buffer import ReplayBufferSaver
 from robolab.utils.montage import LearningMontageCallback
 from robolab.utils.reward_logging import RewardTermLoggerCallback
@@ -53,6 +54,19 @@ def main():
                          "over-estimates and diverges (Q ~ 45k @25k while alpha still ~1 "
                          "-> the divergence is inner-loop, not alpha). Lower it (e.g. 1e-4) "
                          "to slow the bootstrap feedback and keep the critic bounded.")
+    ap.add_argument("--critic-loss", choices=["mse", "huber"], default="mse",
+                    help="critic regression loss. 'mse' (SB3 default) has an UNBOUNDED "
+                         "per-sample gradient (= TD residual), so the bootstrap "
+                         "over-estimation loop self-amplifies and Q diverges. 'huber' "
+                         "saturates that gradient at +/-(--huber-delta), capping the loop "
+                         "gain so the critic can't blow up. Use 'huber' for the 153-dim "
+                         "CPG action space where mse diverges at every tested lr.")
+    ap.add_argument("--huber-delta", type=float, default=50.0, metavar="D",
+                    help="Huber knee (only used with --critic-loss huber). Below D the "
+                         "loss is 0.5*r^2 (== mse, accurate fitting); above D it is linear "
+                         "(bounded gradient). Set ABOVE the healthy TD-residual RMS (~25 "
+                         "here) and BELOW the divergent scale (100s-1000s). Raise it if you "
+                         "raise --gamma (bigger returns -> bigger residuals).")
     ap.add_argument("--ent-coef", default="auto", metavar="C",
                     help="SAC entropy temperature alpha (default 'auto', tuned to hit "
                          "--target-entropy). Pass a float (e.g. 0.1) to PIN it instead.")
@@ -76,11 +90,16 @@ def main():
         target_entropy = float(args.target_entropy) * adim
     else:
         target_entropy = "auto"   # SB3's -|A|; also the (unused) value when alpha is pinned
+    crit = f"{args.critic_loss}" + (f"(delta={args.huber_delta:g})" if args.critic_loss == "huber" else "")
     print(f"gate_use_hands={GATE_USE_HANDS}  gamma={args.gamma}  steps={args.steps:,}  "
           f"lr={args.lr:g}  ent_coef={ent_coef}  target_entropy={target_entropy}  "
+          f"critic_loss={crit}  "
           f"obs dim={env.observation_space.shape}  act dim={env.action_space.shape}")
 
-    model = SAC(
+    # HuberSAC only differs from SAC in the critic loss (robust vs mse); pick per flag.
+    Algo = HuberSAC if args.critic_loss == "huber" else SAC
+    extra = dict(huber_delta=args.huber_delta) if args.critic_loss == "huber" else {}
+    model = Algo(
         policy="MlpPolicy",
         env=env,
         learning_rate=args.lr,
@@ -110,6 +129,7 @@ def main():
         verbose=1,
         device="auto",
         tensorboard_log="outputs/tb_rodent_cpg_sac",
+        **extra,
     )
 
     # Tag the checkpoint prefix so runs never overwrite each other's checkpoints
