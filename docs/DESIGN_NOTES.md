@@ -159,3 +159,52 @@ and so good ideas are parked without being started prematurely.
   -> resume scripts 18/19 can't cross this boundary; probe 17 updated for `1+4*nu`.
 - More of the reward is now multiplicative on `g` (forward, residual, rhythm/phase);
   `gate_floor` keeps a live gradient everywhere.
+
+---
+
+## 4. Reward BALANCE is the real blocker: "don't move" is optimal -- NEXT UP
+
+- **Date:** 2026-08-21
+- **Status:** Diagnosed, not yet fixed. This is the next run's focus (handoff note --
+  a new chat should start here).
+
+**Context / evidence**
+- Two CPG-SAC runs compared on TensorBoard: SAC_6 (the failed magnitude-cost run, 3M)
+  and SAC_7 (the rate-based `coff` fix from #3, gamma 0.99, ~1M/2M). Their `ep_rew_mean`
+  and *every* reward-term curve overlap almost exactly -- EXCEPT `center_cost` (the one
+  thing that changed: -0.021 -> -0.003).
+- Why the coff fix didn't move behavior: `center_cost` is negligible vs the return
+  (~0.017/step diff against ep_rew ~ -950). It was a correct conceptual fix, not a
+  behavioral lever. Everything that drives behavior was identical between the runs.
+- The damning reads from SAC_7's per-term plots:
+  - `forward` ~ **-0.05** (i.e. ~0, slightly NEGATIVE) despite `forward_w=5`, because
+    `gate ~ 0.27` (rarely in full stance) and `vx ~ -0.03` (drifting backward). The
+    forward incentive barely reaches the policy.
+  - `contact` ~ **-1** and `smooth` ~ **-0.9** DOMINATE the return.
+  - `res_cost` ~ **-0.25** in BOTH runs -> residual still used as a sustained parallel
+    controller (secondary issue, untouched).
+- Net: the reward BALANCE makes **not moving optimal** -- locomotion earns ~nothing
+  (gated-down forward) and costs a lot (contact + smoothness). Result is the bimodal
+  stand-still/collapse basin, deeply negative return (~ -950).
+
+**Decision (planned rebalance -- fresh run)**
+1. Make `forward` actually reach the policy: raise `gate_floor` (so forward isn't
+   attenuated to ~0 out of stance) and/or `forward_w`; sanity-check the speed cap +
+   gating aren't jointly strangling it.
+2. Cut the dominating penalties: lower `contact_w` and `smooth_w` (they currently
+   outweigh all positive signal).
+3. Then discipline the residual: raise `res_cost_w` (or gate it less cheaply) to stop
+   the sustained parallel-controller use.
+- Change these deliberately and few-at-a-time for attribution; lean on the per-term
+  reward logs. Buffer-INcompatible (reward changes) -> fresh run.
+
+**Run status at handoff**
+- SAC_7: gamma 0.99, rate-based coff cost, ~1M of 2M, tracking SAC_6 into the same bad
+  basin (expected). Fine to let it finish as confirmation; don't expect it to walk.
+- Code committed through `575c7e7` (local ahead of origin by a few commits). Script 16
+  has `--gamma` (default 0.99) and `--steps` (default 1e6) flags. The gamma=0.999
+  curiosity run has NOT been done yet.
+
+**Revisit when**
+- After the rebalanced run: is `forward` now clearly positive, `vx` > 0, episodes
+  longer? Then return to gait quality (rhythm-reward saturation, ROM) per #3.
