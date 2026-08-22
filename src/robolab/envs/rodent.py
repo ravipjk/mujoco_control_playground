@@ -82,8 +82,13 @@ class RodentRunEnv(RodentStandEnv):
     """
 
     # --- reward weights: your seam to TUNE (run 4 "biological-cost" set) --------
-    contact_w = 1.5     # penalty per NON-paw geom on the floor (0.5 was too soft:
-                        #   it only migrated the skid from forearm -> upper arm)
+    contact_w = 0.75    # penalty per NON-paw geom on the floor. Was 1.5, but the
+                        #   TB rebalance (DESIGN_NOTES #4) showed contact ~ -1.17/step
+                        #   CO-DOMINATED the return (tied with smooth) while forward
+                        #   earned ~0 -> "don't move" was optimal. Halved so attempting
+                        #   locomotion isn't drowned. (The old "0.5 too soft -> migrated
+                        #   the skid" was the pre-gate direct-action env; the stance gate
+                        #   + planted-forelimb center now carry the anti-skid pressure.)
     hand_w = 0.25       # BONUS per front-paw (hand) geom on the floor -- a carrot
                         #   for the missing behavior (it never planted its hands)
     energy_w = 5e-3     # penalty per unit mechanical power (|force*vel| summed) --
@@ -326,11 +331,18 @@ class RodentRunEnv(RodentStandEnv):
             half = 0.5 * (high - low)
             half[~np.isfinite(half) | (half <= 1e-9)] = 1.0
             self._action_half = half
+        w = self._smooth_weights()
         if self._prev_action is None:
+            # Stash the per-dim contributions (zeros on the first step) so a
+            # subclass with grouped actions can log the smooth penalty per group
+            # -- the aggregate hides whether e.g. the freq knob or the per-joint
+            # terms dominate, which is exactly what you need to tune it.
+            self._smooth_per_dim = np.zeros_like(w)
             cost = 0.0
         else:
             d = (action - self._prev_action) / self._action_half
-            cost = float(np.sum(self._smooth_weights() * np.square(d)))
+            self._smooth_per_dim = w * np.square(d)
+            cost = float(np.sum(self._smooth_per_dim))
         self._prev_action = action.copy()
         return cost
 
@@ -467,10 +479,19 @@ class RodentCPGEnv(RodentRunEnv):
     # its own, much larger weight so a STEADY tempo is rewarded, while keeping
     # amp/phase/residual at the base smooth_w. (Phase can be boosted too if the
     # per-limb coordination still jitters -- left at base for now.)
-    smooth_w_freq = 2.0     # weight on the (normalized) frequency-knob delta
-    smooth_w_amp = 3e-3     # per-joint amplitude delta
-    smooth_w_phase = 3e-3   # per-joint phase-offset delta
-    smooth_w_res = 3e-3     # per-joint residual delta
+    # Smooth weights CUT in the DESIGN_NOTES #4 rebalance: `smooth` was co-dominant
+    # (~ -1.11/step) with contact, so escaping the "don't move" basin needs it down.
+    # The new per-group split (smooth_freq/amp/phase/res/coff in info) revealed the
+    # penalty is almost ENTIRELY the freq knob (~30x the whole per-joint sum), so
+    # freq is where the cut has to land -- halving only the per-joint terms would
+    # barely dent the aggregate. smooth_w_freq 2.0 -> 1.0 (still discourages wild
+    # tempo swings, but no longer dominates the return); per-joint 3e-3 -> 1.5e-3
+    # (they directly antagonize the rhythm/phase reward). Watch smooth_freq + tempo
+    # next run for jitter now that the fixed-alpha fix should calm the action noise.
+    smooth_w_freq = 1.0     # weight on the (normalized) frequency-knob delta (was 2.0)
+    smooth_w_amp = 1.5e-3   # per-joint amplitude delta (was 3e-3)
+    smooth_w_phase = 1.5e-3 # per-joint phase-offset delta (was 3e-3)
+    smooth_w_res = 1.5e-3   # per-joint residual delta (was 3e-3)
 
     # --- residual USAGE cost: a SOFT constraint on the aperiodic escape hatch ----
     # The probe showed the policy defeats the CPG by maxing the residual (res_mean
@@ -666,6 +687,18 @@ class RodentCPGEnv(RodentRunEnv):
         else:
             center_move = 0.0
         center_cost = self.coff_move_w * center_move
+
+        # Break the aggregate `smooth` penalty into its action GROUPS so TB shows
+        # whether the freq knob (smooth_w_freq=2.0, 1 term) or the per-joint terms
+        # (114 terms) drive it -- the decomposition needed to tune smooth honestly.
+        # _smooth_per_dim was stashed by _smoothness_cost during super()._get_reward.
+        spd = getattr(self, "_smooth_per_dim", None)
+        if spd is not None and len(spd) == 1 + 4 * nu:
+            self._reward_terms["smooth_freq"] = float(-spd[0])
+            self._reward_terms["smooth_amp"] = float(-np.sum(spd[1:1 + nu]))
+            self._reward_terms["smooth_phase"] = float(-np.sum(spd[1 + nu:1 + 2 * nu]))
+            self._reward_terms["smooth_res"] = float(-np.sum(spd[1 + 2 * nu:1 + 3 * nu]))
+            self._reward_terms["smooth_coff"] = float(-np.sum(spd[1 + 3 * nu:1 + 4 * nu]))
 
         self._reward_terms["res_cost"] = float(-res_cost)
         self._reward_terms["center_cost"] = float(-center_cost)

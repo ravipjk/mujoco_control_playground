@@ -29,7 +29,11 @@ def make_cpg_env():
     # dead forward gradient) into a ramp. forward/residual are attenuated, not
     # annihilated, out of stance, and s_hands is a smooth paw-height proximity so
     # there's a gradient leading the front paws down into the quadruped stance.
-    env.gate_floor = 0.25       # forward earns 25% out of stance, 100% in stance
+    env.gate_floor = 0.5        # forward earns 50% out of stance, 100% in stance.
+                                #   Raised 0.25 -> 0.5 in the DESIGN_NOTES #4 rebalance:
+                                #   forward was reaching the policy at ~0 (gate ~0.42,
+                                #   vx ~0), so keep more of its GRADIENT alive out of
+                                #   stance to pull the rat toward moving.
     env.gate_hands_soft = True  # s_hands = front-paw-height ramp, not a contact count
     # Q1: also gate the PERIODIC rewards by stance, so rhythm/phase pay only once
     # planted (complement to gate_res: residual is cheap OUT of stance). Together
@@ -42,7 +46,11 @@ def make_cpg_env():
 
 
 # Reward-term channels to log (each surfaced by the env in info each step).
+# smooth_{freq,amp,phase,res,coff} break the aggregate `smooth` into its action
+# groups so we can see which sub-term dominates before cutting its weight.
 CPG_TERM_KEYS = ["forward", "alive", "control_cost", "upright", "contact",
                  "hand", "energy", "smooth", "phase", "rhythm", "res_cost",
                  "center_cost", "bad_contacts", "hand_contacts", "foot_contacts",
-                 "gate", "hand_prox", "vx"]
+                 "gate", "hand_prox", "vx",
+                 "smooth_freq", "smooth_amp", "smooth_phase", "smooth_res",
+                 "smooth_coff"]

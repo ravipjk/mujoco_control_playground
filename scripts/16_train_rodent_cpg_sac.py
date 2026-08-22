@@ -46,9 +46,18 @@ def main():
                          "gait. Buffer-safe, so it can also change on a resume.")
     ap.add_argument("--steps", type=int, default=1_000_000, metavar="N",
                     help="total training timesteps (default 1,000,000).")
+    ap.add_argument("--ent-coef", default="0.1", metavar="C",
+                    help="SAC entropy temperature alpha. A FIXED small constant "
+                         "(default 0.1) instead of 'auto', because the auto "
+                         "thermostat wound up (alpha 6-90) on the 153-dim CPG "
+                         "action space and diverged the critic (loss 1e7-1e10). "
+                         "Pass 'auto' to restore the adaptive temperature.")
     args = ap.parse_args()
+    # Accept a float ("0.1") or the literal "auto" for the temperature.
+    ent_coef = args.ent_coef if args.ent_coef == "auto" else float(args.ent_coef)
     env = make_cpg_env()
     print(f"gate_use_hands={GATE_USE_HANDS}  gamma={args.gamma}  steps={args.steps:,}  "
+          f"ent_coef={ent_coef}  "
           f"obs dim={env.observation_space.shape}  act dim={env.action_space.shape}")
 
     model = SAC(
@@ -66,7 +75,14 @@ def main():
         gamma=args.gamma,
         train_freq=1,
         gradient_steps=1,
-        ent_coef="auto",
+        # Fixed small alpha (default 0.1) rather than "auto": the auto-entropy
+        # thermostat has a target of -|A| = -153 for this action space, and the
+        # tanh-squash log-prob correction summed over 153 dims makes the measured
+        # entropy read far below target -> alpha winds up (6-90) -> the -alpha*logpi
+        # term explodes the critic's bootstrap target -> divergence. A constant
+        # bounds that term so the critic can converge and the reward experiment is
+        # interpretable. (Sweep via --ent-coef; 'auto' restores the thermostat.)
+        ent_coef=ent_coef,
         policy_kwargs=dict(net_arch=[256, 256]),
         verbose=1,
         device="auto",
