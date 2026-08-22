@@ -46,6 +46,13 @@ def main():
                          "gait. Buffer-safe, so it can also change on a resume.")
     ap.add_argument("--steps", type=int, default=1_000_000, metavar="N",
                     help="total training timesteps (default 1,000,000).")
+    ap.add_argument("--lr", type=float, default=3e-4, metavar="LR",
+                    help="learning rate for actor, critic AND alpha (SB3 shares one). "
+                         "SB3's 3e-4 default is tuned for ~6-17 dim MuJoCo; our 153-dim "
+                         "action space makes Q harder to approximate and the critic "
+                         "over-estimates and diverges (Q ~ 45k @25k while alpha still ~1 "
+                         "-> the divergence is inner-loop, not alpha). Lower it (e.g. 1e-4) "
+                         "to slow the bootstrap feedback and keep the critic bounded.")
     ap.add_argument("--ent-coef", default="auto", metavar="C",
                     help="SAC entropy temperature alpha (default 'auto', tuned to hit "
                          "--target-entropy). Pass a float (e.g. 0.1) to PIN it instead.")
@@ -70,13 +77,13 @@ def main():
     else:
         target_entropy = "auto"   # SB3's -|A|; also the (unused) value when alpha is pinned
     print(f"gate_use_hands={GATE_USE_HANDS}  gamma={args.gamma}  steps={args.steps:,}  "
-          f"ent_coef={ent_coef}  target_entropy={target_entropy}  "
+          f"lr={args.lr:g}  ent_coef={ent_coef}  target_entropy={target_entropy}  "
           f"obs dim={env.observation_space.shape}  act dim={env.action_space.shape}")
 
     model = SAC(
         policy="MlpPolicy",
         env=env,
-        learning_rate=3e-4,
+        learning_rate=args.lr,
         buffer_size=300_000,
         learning_starts=10_000,
         batch_size=256,
