@@ -47,18 +47,30 @@ def main():
     ap.add_argument("--steps", type=int, default=1_000_000, metavar="N",
                     help="total training timesteps (default 1,000,000).")
     ap.add_argument("--ent-coef", default="auto", metavar="C",
-                    help="SAC entropy temperature alpha (default 'auto'). The earlier "
-                         "wind-up (alpha 6-90) that diverged the critic turned out to be "
-                         "a SYMPTOM of an ill-conditioned critic (raw, 20-40x-scaled "
-                         "velocity obs), now fixed by in-env obs normalization. With that "
-                         "root addressed, auto-alpha is restored for exploration (and it "
-                         "damps value overestimation). Pass a float (e.g. 0.1) to pin it.")
+                    help="SAC entropy temperature alpha (default 'auto', tuned to hit "
+                         "--target-entropy). Pass a float (e.g. 0.1) to PIN it instead.")
+    ap.add_argument("--target-entropy", default="-2.0", metavar="H",
+                    help="target policy entropy for auto-alpha, in nats PER ACTION DIM "
+                         "(default -2.0). SB3's default is -1.0/dim (=-|A|), which is too "
+                         "aggressive for this 153-dim action space: the policy (under "
+                         "reward pressure) sits BELOW -1/dim, so the thermostat cranks "
+                         "alpha forever (SAC_9: alpha -> ~1950, re-diverging the critic). "
+                         "A MORE NEGATIVE target demands LESS randomness -> reachable "
+                         "equilibrium -> alpha settles. Ignored unless --ent-coef auto. "
+                         "Pass 'sb3' for SB3's -|A| default.")
     args = ap.parse_args()
     # Accept a float ("0.1") or the literal "auto" for the temperature.
     ent_coef = args.ent_coef if args.ent_coef == "auto" else float(args.ent_coef)
     env = make_cpg_env()
+    # Target entropy is only consulted for auto-alpha. SB3 wants a TOTAL (summed over
+    # dims); we expose it per-dim (dimension-independent) and multiply by |A| here.
+    adim = env.action_space.shape[0]
+    if ent_coef == "auto" and args.target_entropy != "sb3":
+        target_entropy = float(args.target_entropy) * adim
+    else:
+        target_entropy = "auto"   # SB3's -|A|; also the (unused) value when alpha is pinned
     print(f"gate_use_hands={GATE_USE_HANDS}  gamma={args.gamma}  steps={args.steps:,}  "
-          f"ent_coef={ent_coef}  "
+          f"ent_coef={ent_coef}  target_entropy={target_entropy}  "
           f"obs dim={env.observation_space.shape}  act dim={env.action_space.shape}")
 
     model = SAC(
@@ -76,15 +88,17 @@ def main():
         gamma=args.gamma,
         train_freq=1,
         gradient_steps=1,
-        # Auto-tuned alpha (default). We first suspected the alpha wind-up (6-90) was
-        # diverging the critic, but pinning it did NOT stop the divergence -- the real
-        # cause was ill-conditioned inputs (raw velocity obs 20-40x other channels),
-        # now normalized in the env. With the critic well-conditioned, auto-alpha is
-        # the right default again: real exploration to FIND locomotion, plus the entropy
-        # term regularizes the actor away from exploiting Q-overestimation. auto-alpha is
-        # also self-diagnosing here -- if it STILL winds up with a stable critic, the
-        # target-entropy really is too aggressive for 153 dims. (Pin via --ent-coef.)
+        # Auto-tuned alpha, but with a REACHABLE target entropy (--target-entropy).
+        # Two roots of the chronic critic divergence, found in sequence:
+        #   1. ill-conditioned inputs (raw velocity obs 20-40x other channels) -> fixed
+        #      by in-env obs normalization (SAC_9 then STARTED healthy: critic ~64).
+        #   2. auto-alpha still wound up (SAC_9: alpha -> ~1950) because SB3's default
+        #      target -|A| = -153 is unreachable here -> the -alpha*logpi term re-inflated
+        #      the critic. Fixed by demanding LESS entropy (more-negative target), so the
+        #      thermostat finds an equilibrium and alpha settles (keeps adaptivity, unlike
+        #      a hard pin). Set target via --target-entropy; pin alpha via --ent-coef.
         ent_coef=ent_coef,
+        target_entropy=target_entropy,
         policy_kwargs=dict(net_arch=[256, 256]),
         verbose=1,
         device="auto",
