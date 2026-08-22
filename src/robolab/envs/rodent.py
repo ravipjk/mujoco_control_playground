@@ -498,14 +498,22 @@ class RodentCPGEnv(RodentRunEnv):
     # into a postural setpoint separate from the fast residual:
     #     ctrl = center + coff_ema + osc + residual
     # Guardrails so it stays POSTURAL (not a slow parallel direct-drive controller
-    # that could resurrect the belly-crawl): modest authority (coff_gain*half), a slow
-    # EMA (too sluggish to do stepping), and a small usage cost so it defaults to the
-    # calibrated center unless holding a pose actually helps (much cheaper than the
-    # residual tax -- posture-holding should be nearly free, that's the point).
+    # that could resurrect the belly-crawl): modest authority (coff_gain*half) and a
+    # slow EMA (too sluggish to do stepping).
+    #
+    # COST SEMANTICS (fixed): the offset is a movable OSCILLATION CENTER, so HOLDING a
+    # non-zero setpoint must be FREE -- within a stable gait the center legitimately
+    # sits at whatever angle is that joint's oscillation midpoint. We therefore charge
+    # the RATE of change of the setpoint (cost to *reposition* the center), not its
+    # magnitude. Integrated over a move, sum|d coff_ema| = |final offset|, so this is
+    # effectively a ONE-TIME charge to shift the center, then zero cost to ride it --
+    # "pay to change gait posture, free to hold it." (The earlier magnitude penalty was
+    # a spring back to the midpoint, which fought the whole point of a movable center.)
     coff_gain = 0.3          # setpoint authority as a fraction of each joint half-range
     coff_beta = 0.01         # EMA rate; tau ~ 1/beta = 100 steps = 2 s (slow = postural)
-    coff_cost_w = 0.005      # usage tax on |offset| (<< res_cost_w so posture is cheap)
-    smooth_w_coff = 3e-3     # per-joint center-offset delta weight (see _smooth_weights)
+    coff_move_w = 0.05       # tax on the SETPOINT's per-step change (repositioning cost)
+    smooth_w_coff = 0.0      # coff move-cost owns "cost to reposition"; don't double-tax
+                             #   the raw command via smoothness (the EMA rate-limits it)
 
     # --- planted forelimb nominal stance (CPG center offset) --------------------
     # The CPG oscillates around _center. At the ctrlrange MIDPOINT the forelimbs
@@ -575,8 +583,9 @@ class RodentCPGEnv(RodentRunEnv):
         # only changes the reset distribution, not the reward or the action->ctrl map,
         # so a seamless resume can keep using the existing replay buffer.
         self._phase = float(self.np_random.uniform(0.0, 2.0 * np.pi))
-        self._res_ema = None   # forget last episode's residual history
-        self._coff_ema = None  # forget last episode's slow center offset
+        self._res_ema = None    # forget last episode's residual history
+        self._coff_ema = None   # forget last episode's slow center offset
+        self._coff_delta = None  # no repositioning charged on the first step
 
     def _apply_action(self, action):
         nu = self.model.nu
@@ -593,11 +602,15 @@ class RodentCPGEnv(RodentRunEnv):
 
         # Q3: low-pass the requested center offset into a SLOW postural setpoint, so
         # the policy can hold a shifted pose without the fast residual fighting it.
+        # Stash the per-step CHANGE of the setpoint so _get_reward can tax repositioning
+        # (not the held level) -- see coff_move_w.
         target_off = self.coff_gain * self._half * coff
         if self._coff_ema is None:
             self._coff_ema = np.zeros(nu, dtype=np.float64)
-        self._coff_ema = ((1.0 - self.coff_beta) * self._coff_ema
-                          + self.coff_beta * target_off)
+        new_ema = ((1.0 - self.coff_beta) * self._coff_ema
+                   + self.coff_beta * target_off)
+        self._coff_delta = new_ema - self._coff_ema
+        self._coff_ema = new_ema
 
         amp_pos = 0.5 * (amp + 1.0)  # [-1,1] -> [0,1] nonneg amplitude
         osc = self.cpg_amp_gain * self._half * amp_pos * np.sin(self._phase + np.pi * psi)
@@ -643,15 +656,16 @@ class RodentCPGEnv(RodentRunEnv):
             g = self._reward_terms.get("gate", 1.0)
             res_cost = res_cost * (self.gate_floor + (1.0 - self.gate_floor) * g)
 
-        # Q3: small tax on the SLOW center offset, normalized per joint so it's
-        # dimensionless. Kept cheap (<< residual) so holding a helpful posture is
-        # nearly free, but nonzero so the setpoint defaults back to the calibrated
-        # center when a shift isn't earning its keep.
-        if self._coff_ema is not None:
-            center_usage = float(np.sum(np.abs(self._coff_ema) / self._half))
+        # Q3: tax the RATE OF CHANGE of the center setpoint, not its level -- holding a
+        # non-zero oscillation center is FREE (that's the point of a movable center);
+        # only *repositioning* it costs. Integrated over a move this equals the offset
+        # magnitude, i.e. a one-time "cost to shift posture," then free to ride.
+        move = getattr(self, "_coff_delta", None)
+        if move is not None:
+            center_move = float(np.sum(np.abs(move) / self._half))
         else:
-            center_usage = 0.0
-        center_cost = self.coff_cost_w * center_usage
+            center_move = 0.0
+        center_cost = self.coff_move_w * center_move
 
         self._reward_terms["res_cost"] = float(-res_cost)
         self._reward_terms["center_cost"] = float(-center_cost)

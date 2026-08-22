@@ -117,11 +117,27 @@ and so good ideas are parked without being started prematurely.
   height + orientation) is redundant. If `g`'s critic-variance benefit is ever wanted,
   the right home is an **asymmetric critic**, not the shared observation.
 - **Q3 -- slow, policy-controlled center offset** (`coff` action group): a 4th action
-  group low-passed into a slow postural setpoint, `ctrl = center + coff_ema + osc +
-  residual`. Gives the policy an honest, cheap channel to *reposition* the forelimb
+  group low-passed (EMA) into a slow postural setpoint, `ctrl = center + coff_ema +
+  osc + residual`. Gives the policy an honest channel to *reposition* the forelimb
   pose (directly attacks root #1), decoupled from the fast/taxed residual. Guardrails
   keep it POSTURAL not a parallel direct-drive: modest `coff_gain` (0.3), slow
-  `coff_beta` (0.01, tau~2 s), small `coff_cost_w` (0.005 << `res_cost_w`).
+  `coff_beta` (0.01, tau~2 s).
+
+  - **Cost semantics -- CORRECTED (2026-08-21).** First pass taxed the offset
+    *magnitude* (`Σ|coff_ema|`), i.e. a spring pulling the center back to the ctrl
+    midpoint -- which FIGHTS the whole idea of a movable center. A first CPG run
+    (1M->3M, gamma 0.99) confirmed the muddle: no locomotion (`vx~=0`), bimodal
+    stand-still/collapse, with `coff` slammed near-max (`coff_mean~0.66`). Diagnosis
+    correction: a large *steady* `coff` is FINE (it's the intended oscillation center),
+    and it does NOT drown the CPG (osc happens *around* the center); the real
+    rhythm-underminer was the sustained **residual** (`res_mean~0.68`), a separate
+    issue. Fix: charge the **rate of change** of the setpoint
+    (`coff_move_w * Σ|d coff_ema|/half`), not its level. Integrated over a move this
+    equals the offset magnitude -> a ONE-TIME "cost to shift posture," then FREE to
+    hold -- "pay to change the gait's posture, ride the gait for free." Holding a
+    non-zero center within a stable gait costs ~0 (verified: cost decays to ~2e-5 while
+    a large setpoint is held). `smooth_w_coff` set to 0 (the move-cost owns
+    "reposition cost"; the EMA already rate-limits the command).
 
 **Rejected / not done**
 - **Q2 (fade `osc` by `g` at the actuation level):** dropped. Q1 removes the reward

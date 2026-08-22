@@ -40,9 +40,13 @@ def main():
                     help="also save the replay buffer every N steps to a single "
                          "rolling file (so a Ctrl-C'd run resumes seamlessly). "
                          "0 (default) = only save the buffer at end-of-run.")
+    ap.add_argument("--gamma", type=float, default=0.99, metavar="G",
+                    help="discount factor. 0.99 (default) -> ~2 s effective horizon; "
+                         "0.999 -> ~20 s (whole episode) to value longevity/sustained "
+                         "gait. Buffer-safe, so it can also change on a resume.")
     args = ap.parse_args()
     env = make_cpg_env()
-    print(f"gate_use_hands={GATE_USE_HANDS}  "
+    print(f"gate_use_hands={GATE_USE_HANDS}  gamma={args.gamma}  "
           f"obs dim={env.observation_space.shape}  act dim={env.action_space.shape}")
 
     model = SAC(
@@ -53,7 +57,11 @@ def main():
         learning_starts=10_000,
         batch_size=256,
         tau=0.005,
-        gamma=0.99,
+        # Discount factor from --gamma (default 0.99 -> ~2 s horizon). Try --gamma 0.999
+        # (~20 s = whole episode) to make the full future alive+forward stream count, so
+        # a "lunge now, topple in 3 s" strategy is penalized and longevity is valued;
+        # watch the critic (value targets ~10x larger -> noisier/slower value learning).
+        gamma=args.gamma,
         train_freq=1,
         gradient_steps=1,
         ent_coef="auto",
