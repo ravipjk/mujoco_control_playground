@@ -548,6 +548,34 @@ class RodentCPGEnv(RodentRunEnv):
     # (pin trunk at settled height, lower paws to the floor). {} => old midpoint center.
     cpg_center_offsets = {"elbow_L": 0.6, "elbow_R": 0.6}
 
+    # --- observation normalization: a fixed afferent SENSOR GAIN (DESIGN_NOTES #1) --
+    # The critic diverged (Q -> 1e13) in every run. Root cause (measured via an obs
+    # probe under the SAC_8 policy): the observation is raw qpos/qvel, and the VELOCITY
+    # channels are 20-40x every other input (torso angular-vel p99 ~12, joint-vel p99
+    # ~12, max ~38; positions/quat/clock/paws are all <=~2). Feeding that badly-scaled
+    # vector to an unbounded Q-head lets values blow up. We rescale the velocity dims to
+    # ~unit HERE, in the afferent seam, rather than with an external VecNormalize wrapper
+    # -- off-policy SAC wants a FIXED transform (the replay buffer stays consistent) and
+    # a self-contained env (watch/probe/resume/montage all get normalized obs for free).
+    # Only angvel + joint-vels are divided (linvel ~0.5 and the rest are already ~unit).
+    obs_vel_scale = 10.0     # divisor for velocity obs channels (p99 ~12 -> ~1.2)
+
+    def _obs_scale_vec(self):
+        """Fixed per-dim divisor to bring the observation to ~unit scale, built once
+        from the model's nq/nv split (no magic indices). Obs layout (see _get_obs):
+          [ qpos[2:] (z, quat, joint angles) | qvel (linvel, angvel, joint vels) |
+            clock(2) | paws(4) ].
+        Only the angular-vel and joint-vel blocks are scaled; everything else is 1."""
+        if getattr(self, "_obs_scale", None) is None:
+            nq, nv = self.model.nq, self.model.nv
+            n = (nq - 2) + nv + 6            # base (qpos[2:]+qvel) + clock(2) + paws(4)
+            scale = np.ones(n, dtype=np.float32)
+            vbase = nq - 2                    # index where the qvel block starts
+            scale[vbase + 3:vbase + 6] = self.obs_vel_scale   # torso angular velocity
+            scale[vbase + 6:vbase + nv] = self.obs_vel_scale  # joint velocities
+            self._obs_scale = scale
+        return self._obs_scale
+
     def __init__(self, xml_path, cpg_f_base=3.0, cpg_f_range=2.0,
                  cpg_amp_gain=0.6, cpg_res_gain=0.2, **kwargs):
         self._phase = 0.0  # exists before super().__init__ calls _get_obs()
@@ -592,7 +620,10 @@ class RodentCPGEnv(RodentRunEnv):
         # Append the CPG clock (sin/cos phi) + per-paw ground normal force (a real
         # afferent signal, not the derived gate g). Order: [base, clock(2), paws(4)].
         paws = self._paw_contact_forces()
-        return np.concatenate([base, [np.sin(ph), np.cos(ph)], paws]).astype(np.float32)
+        obs = np.concatenate([base, [np.sin(ph), np.cos(ph)], paws]).astype(np.float32)
+        # Sensor-gain normalization: divide the velocity channels to ~unit scale so the
+        # critic's inputs are well-conditioned (see obs_vel_scale / _obs_scale_vec).
+        return (obs / self._obs_scale_vec()).astype(np.float32)
 
     def _reset_model(self):
         super()._reset_model()

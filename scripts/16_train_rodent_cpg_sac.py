@@ -46,12 +46,13 @@ def main():
                          "gait. Buffer-safe, so it can also change on a resume.")
     ap.add_argument("--steps", type=int, default=1_000_000, metavar="N",
                     help="total training timesteps (default 1,000,000).")
-    ap.add_argument("--ent-coef", default="0.1", metavar="C",
-                    help="SAC entropy temperature alpha. A FIXED small constant "
-                         "(default 0.1) instead of 'auto', because the auto "
-                         "thermostat wound up (alpha 6-90) on the 153-dim CPG "
-                         "action space and diverged the critic (loss 1e7-1e10). "
-                         "Pass 'auto' to restore the adaptive temperature.")
+    ap.add_argument("--ent-coef", default="auto", metavar="C",
+                    help="SAC entropy temperature alpha (default 'auto'). The earlier "
+                         "wind-up (alpha 6-90) that diverged the critic turned out to be "
+                         "a SYMPTOM of an ill-conditioned critic (raw, 20-40x-scaled "
+                         "velocity obs), now fixed by in-env obs normalization. With that "
+                         "root addressed, auto-alpha is restored for exploration (and it "
+                         "damps value overestimation). Pass a float (e.g. 0.1) to pin it.")
     args = ap.parse_args()
     # Accept a float ("0.1") or the literal "auto" for the temperature.
     ent_coef = args.ent_coef if args.ent_coef == "auto" else float(args.ent_coef)
@@ -75,13 +76,14 @@ def main():
         gamma=args.gamma,
         train_freq=1,
         gradient_steps=1,
-        # Fixed small alpha (default 0.1) rather than "auto": the auto-entropy
-        # thermostat has a target of -|A| = -153 for this action space, and the
-        # tanh-squash log-prob correction summed over 153 dims makes the measured
-        # entropy read far below target -> alpha winds up (6-90) -> the -alpha*logpi
-        # term explodes the critic's bootstrap target -> divergence. A constant
-        # bounds that term so the critic can converge and the reward experiment is
-        # interpretable. (Sweep via --ent-coef; 'auto' restores the thermostat.)
+        # Auto-tuned alpha (default). We first suspected the alpha wind-up (6-90) was
+        # diverging the critic, but pinning it did NOT stop the divergence -- the real
+        # cause was ill-conditioned inputs (raw velocity obs 20-40x other channels),
+        # now normalized in the env. With the critic well-conditioned, auto-alpha is
+        # the right default again: real exploration to FIND locomotion, plus the entropy
+        # term regularizes the actor away from exploiting Q-overestimation. auto-alpha is
+        # also self-diagnosing here -- if it STILL winds up with a stable critic, the
+        # target-entropy really is too aggressive for 153 dims. (Pin via --ent-coef.)
         ent_coef=ent_coef,
         policy_kwargs=dict(net_arch=[256, 256]),
         verbose=1,
