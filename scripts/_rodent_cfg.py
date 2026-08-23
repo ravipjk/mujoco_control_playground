@@ -39,9 +39,10 @@ def make_cpg_env():
     # planted (complement to gate_res: residual is cheap OUT of stance). Together
     # this is the "recover aperiodically, then stride periodically" curriculum.
     env.gate_rhythm = True
-    # NOTE: this env now has an AUGMENTED obs (per-paw contact force) and a LARGER
-    # action space (Q3 center-offset group), so its checkpoints are NOT compatible
-    # with pre-change CPG models -- fresh run only, no resume across the change.
+    # NOTE: this env has an AUGMENTED obs (per-paw contact force) and a SYMMETRY-
+    # REDUCED action space (97-dim: dfreq, duty, amp_sym(19), phase_tied(19),
+    # res(38), coff_sym(19)), so its checkpoints are NOT compatible with the older
+    # 153-dim CPG models -- fresh run only, no resume across the change.
     return env
 
 
@@ -52,5 +53,5 @@ CPG_TERM_KEYS = ["forward", "alive", "control_cost", "upright", "contact",
                  "hand", "energy", "smooth", "phase", "rhythm", "res_cost",
                  "center_cost", "bad_contacts", "hand_contacts", "foot_contacts",
                  "gate", "hand_prox", "vx",
-                 "smooth_freq", "smooth_amp", "smooth_phase", "smooth_res",
-                 "smooth_coff"]
+                 "smooth_freq", "smooth_duty", "smooth_amp", "smooth_phase",
+                 "smooth_res", "smooth_coff"]

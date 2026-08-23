@@ -489,9 +489,37 @@ class RodentCPGEnv(RodentRunEnv):
     # (they directly antagonize the rhythm/phase reward). Watch smooth_freq + tempo
     # next run for jitter now that the fixed-alpha fix should calm the action noise.
     smooth_w_freq = 1.0     # weight on the (normalized) frequency-knob delta (was 2.0)
+    smooth_w_duty = 1.0     # weight on the (normalized) duty/warp-knob delta (slow, like freq)
     smooth_w_amp = 1.5e-3   # per-joint amplitude delta (was 3e-3)
     smooth_w_phase = 1.5e-3 # per-joint phase-offset delta (was 3e-3)
     smooth_w_res = 1.5e-3   # per-joint residual delta (was 3e-3)
+
+    # --- SYMMETRY-REDUCED ACTION SPACE (bilateral change of basis) --------------
+    # The 153-dim action (1 + 4*38) drove the SAC critic to over-estimate and
+    # DIVERGE (max-bias grows with action dim). We shrink it by exploiting the
+    # rat's sagittal MIRROR symmetry and by tying left/right phase, WITHOUT losing
+    # the residual's full authority (feedback must break symmetry to catch a
+    # stumble). New layout (see _build_symmetry_maps / _apply_action):
+    #   [ dfreq(1), duty(1), amp_sym(19), phase_tied(19), res(38), coff_sym(19) ]
+    #   = 97 dims (down from 153, ~1.6x).
+    # Principle: impose symmetry on the REFERENCE (amp/phase/coff -> straight,
+    # mirror-symmetric intended gait) but NOT on the CORRECTIONS (res stays full
+    # 38 so it can generate roll/lateral/one-sided catches and stand-ups).
+    #   - amp_sym / coff_sym: 14 L/R pair commons + 5 sagittal-midline
+    #     (extend/atlas/mandible); the 5 antisym-midline (bend/twist) are pinned to
+    #     0 (they oscillate/offset only to TURN, a Phase-2 DOF).
+    #   - phase_tied: one phase per pair with the partner locked a HALF-CYCLE away
+    #     (contralateral antiphase, the walk/trot relation) + 5 midline phases.
+    # The map is a fixed linear expansion built once at construction, so it stays a
+    # clean change of basis (synergy factoring can slot in later by shrinking it).
+    use_symmetry = True      # False -> fall back to the legacy 153-dim per-joint action
+    # Duty-factor phase WARP (temporal symmetry break). One global knob beta in
+    # [duty_lo, duty_hi] redistributes time within each cycle: the first half-wave
+    # occupies fraction beta of real time, the second (1-beta). beta=0.5 == uniform
+    # (the neutral at duty action 0), beta>0.5 stretches stance. Monotonic
+    # reparameterization of the shared clock -> period is preserved.
+    use_duty_warp = True
+    duty_lo, duty_hi = 0.4, 0.6   # beta range; action in [-1,1] maps linearly onto this
 
     # --- residual USAGE cost: a SOFT constraint on the aperiodic escape hatch ----
     # The probe showed the policy defeats the CPG by maxing the residual (res_mean
@@ -609,10 +637,146 @@ class RodentCPGEnv(RodentRunEnv):
         self._res_ema = None   # per-joint EMA of |residual|, (re)set on reset
         self._coff_ema = None  # per-joint slow center OFFSET (Q3), (re)set on reset
 
-        # Redefine the action space: [dfreq, amp(nu), phase(nu), residual(nu),
-        # coff(nu)] -- the trailing coff group is the Q3 slow center offset.
+        # Redefine the action space. Either the symmetry-reduced layout
+        # [dfreq, duty, amp_sym(19), phase_tied(19), res(38), coff_sym(19)] = 97,
+        # or the legacy per-joint layout [dfreq, amp(nu), phase(nu), res(nu),
+        # coff(nu)] = 1 + 4*nu. Both paths set the same _sl_* group slices so the
+        # smoothness/reward code is layout-agnostic.
+        if self.use_symmetry:
+            self._build_symmetry_maps()
+        else:
+            self._build_legacy_maps()
+
+    def _build_legacy_maps(self):
+        """Legacy 153-dim per-joint action space (no symmetry, no duty warp)."""
+        nu = self.model.nu
+        self._S = None
+        self._psi_gather = None
+        self._sl_dfreq = slice(0, 1)
+        self._sl_duty = None
+        self._sl_amp = slice(1, 1 + nu)
+        self._sl_phase = slice(1 + nu, 1 + 2 * nu)
+        self._sl_res = slice(1 + 2 * nu, 1 + 3 * nu)
+        self._sl_coff = slice(1 + 3 * nu, 1 + 4 * nu)
         self.action_space = spaces.Box(low=-1.0, high=1.0,
                                        shape=(1 + 4 * nu,), dtype=np.float32)
+
+    def _build_symmetry_maps(self):
+        """Build the fixed bilateral change-of-basis (see use_symmetry docstring) and
+        set the reduced action space + per-group slices.
+
+        Populates a fixed linear expansion so _apply_action stays a clean change of
+        basis:
+          self._S          (nu, n_sym) symmetric expansion: reduced params -> 38 joints
+          self._psi_gather (nu,) int   which reduced-phase feeds each joint (-1 = none)
+          self._psi_offset (nu,) float additive psi offset (+1.0 == half cycle, for R)
+          self._sl_*       action-vector slices for each group; self.action_space
+        """
+        model = self.model
+        nu = model.nu
+        names = [model.actuator(i).name for i in range(nu)]
+
+        def side(nm):
+            if nm.endswith("_L") or "_L_" in nm:
+                return "L"
+            if nm.endswith("_R") or "_R_" in nm:
+                return "R"
+            return None
+
+        def canon(nm):  # side-agnostic key so L/R partners collide
+            return (nm.replace("_L_", "_@_").replace("_R_", "_@_")
+                      .replace("_L", "_@").replace("_R", "_@"))
+
+        pairs = {}                 # canon -> {"L": idx, "R": idx}
+        sym_mid, anti_mid = [], []
+        for i, nm in enumerate(names):
+            s = side(nm)
+            if s is not None:
+                pairs.setdefault(canon(nm), {})[s] = i
+            elif nm.endswith("_bend") or nm.endswith("_twist"):
+                anti_mid.append(i)     # lateral bend / axial twist -> turning (antisym)
+            else:
+                sym_mid.append(i)      # extend / atlas / mandible -> sagittal (symmetric)
+
+        pair_list = sorted((d["L"], d["R"]) for d in pairs.values())  # stable by L index
+        n_pairs, n_symmid = len(pair_list), len(sym_mid)
+        n_sym = n_pairs + n_symmid          # amp/coff symmetric-subspace dim
+        n_phase = n_pairs + n_symmid        # one phase per pair + per sym-midline
+        self._sym_dims = (n_pairs, n_symmid, len(anti_mid))
+
+        # Symmetric expansion: pair-common -> BOTH sides equally; sym-midline
+        # passthrough; antisym-midline rows stay 0 (pinned off -> no oscillation/offset).
+        S = np.zeros((nu, n_sym), dtype=np.float64)
+        for p, (li, ri) in enumerate(pair_list):
+            S[li, p] = S[ri, p] = 1.0
+        for k, mi in enumerate(sym_mid):
+            S[mi, n_pairs + k] = 1.0
+        self._S = S
+
+        # Phase gather: L takes phase p @ offset 0, R takes phase p @ +1.0 (half cycle
+        # == contralateral antiphase); sym-midline take their own phase; antisym-midline
+        # are inert (amp pinned 0) -> gather -1, psi 0.
+        gather = np.full(nu, -1, dtype=np.int64)
+        offset = np.zeros(nu, dtype=np.float64)
+        for p, (li, ri) in enumerate(pair_list):
+            gather[li] = gather[ri] = p
+            offset[ri] = 1.0
+        for k, mi in enumerate(sym_mid):
+            gather[mi] = n_pairs + k
+        self._psi_gather = gather
+        self._psi_offset = offset
+
+        i = 0
+        self._sl_dfreq = slice(i, i + 1); i += 1
+        self._sl_duty = slice(i, i + 1); i += 1
+        self._sl_amp = slice(i, i + n_sym); i += n_sym
+        self._sl_phase = slice(i, i + n_phase); i += n_phase
+        self._sl_res = slice(i, i + nu); i += nu
+        self._sl_coff = slice(i, i + n_sym); i += n_sym
+        self.action_space = spaces.Box(low=-1.0, high=1.0,
+                                       shape=(i,), dtype=np.float32)
+
+    def _duty_beta(self, duty):
+        """Map a duty action in [-1,1] to the stance fraction beta in [duty_lo,duty_hi].
+        duty=0 -> midpoint (0.5 for the default range == uniform, no warp)."""
+        t = 0.5 * (float(duty) + 1.0)
+        return self.duty_lo + t * (self.duty_hi - self.duty_lo)
+
+    def _warp_phase(self, theta, beta):
+        """Duty-factor reparameterization of phase (temporal symmetry break). Maps the
+        uniform angle theta so the first half-wave [0,pi) occupies fraction beta of the
+        cycle and the second [pi,2pi) the rest. Monotonic & 2pi-periodic -> preserves
+        the period, only redistributes time within it."""
+        two_pi = 2.0 * np.pi
+        u = np.mod(theta, two_pi) / two_pi
+        v = np.where(u < beta,
+                     0.5 * u / beta,
+                     0.5 + 0.5 * (u - beta) / (1.0 - beta))
+        return two_pi * v
+
+    def _decode_action(self, action):
+        """Split the (reduced or legacy) action into physical per-joint quantities:
+        (dfreq, beta|None, amp_pos[nu], psi[nu], coff[nu], res[nu]). This is the ONLY
+        place the two action layouts differ; the physics in _apply_action is shared."""
+        if self.use_symmetry:
+            dfreq = float(action[self._sl_dfreq][0])
+            beta = (self._duty_beta(action[self._sl_duty][0])
+                    if self.use_duty_warp else None)
+            amp_red = np.asarray(action[self._sl_amp], dtype=np.float64)
+            amp_pos = self._S @ (0.5 * (amp_red + 1.0))       # 19->38; antisym-mid -> 0
+            phase_red = np.asarray(action[self._sl_phase], dtype=np.float64)
+            g = self._psi_gather
+            psi = np.where(g >= 0, phase_red[np.clip(g, 0, None)] + self._psi_offset, 0.0)
+            coff = self._S @ np.asarray(action[self._sl_coff], dtype=np.float64)  # 19->38
+            res = np.asarray(action[self._sl_res], dtype=np.float64)
+        else:
+            dfreq = float(action[0])
+            beta = None
+            amp_pos = 0.5 * (np.asarray(action[self._sl_amp], dtype=np.float64) + 1.0)
+            psi = np.asarray(action[self._sl_phase], dtype=np.float64)
+            res = np.asarray(action[self._sl_res], dtype=np.float64)
+            coff = np.asarray(action[self._sl_coff], dtype=np.float64)
+        return dfreq, beta, amp_pos, psi, coff, res
 
     def _get_obs(self):
         base = super()._get_obs()
@@ -641,11 +805,7 @@ class RodentCPGEnv(RodentRunEnv):
 
     def _apply_action(self, action):
         nu = self.model.nu
-        dfreq = float(action[0])
-        amp = np.asarray(action[1:1 + nu], dtype=np.float64)
-        psi = np.asarray(action[1 + nu:1 + 2 * nu], dtype=np.float64)
-        res = np.asarray(action[1 + 2 * nu:1 + 3 * nu], dtype=np.float64)
-        coff = np.asarray(action[1 + 3 * nu:1 + 4 * nu], dtype=np.float64)
+        dfreq, beta, amp_pos, psi, coff, res = self._decode_action(action)
 
         # Advance the integrated phase at the (policy-modulated) frequency.
         f = self.cpg_f_base + self.cpg_f_range * dfreq
@@ -664,23 +824,30 @@ class RodentCPGEnv(RodentRunEnv):
         self._coff_delta = new_ema - self._coff_ema
         self._coff_ema = new_ema
 
-        amp_pos = 0.5 * (amp + 1.0)  # [-1,1] -> [0,1] nonneg amplitude
-        osc = self.cpg_amp_gain * self._half * amp_pos * np.sin(self._phase + np.pi * psi)
+        # Per-joint oscillator angle (psi in [-1,1] -> pi*psi rad), optionally
+        # duty-warped (temporal symmetry break). amp_pos is already the nonneg [0,1]
+        # amplitude (the symmetric expansion pins antisym-midline joints to 0).
+        theta = self._phase + np.pi * psi
+        if beta is not None:
+            theta = self._warp_phase(theta, beta)
+        osc = self.cpg_amp_gain * self._half * amp_pos * np.sin(theta)
         residual = self.cpg_res_gain * self._half * res
         ctrl = self._center + self._coff_ema + osc + residual
         self.data.ctrl[:] = np.clip(ctrl, self._ctrl_low, self._ctrl_high)
 
     def _smooth_weights(self):
-        # Heterogeneous action = [dfreq(1), amp(nu), psi(nu), res(nu), coff(nu)].
-        # Weight each group separately so the single frequency term isn't drowned by
-        # the 4*nu per-joint terms -- this is what makes `smooth` regularize tempo.
-        nu = self.model.nu
-        w = np.empty(1 + 4 * nu, dtype=np.float64)
-        w[0] = self.smooth_w_freq
-        w[1:1 + nu] = self.smooth_w_amp
-        w[1 + nu:1 + 2 * nu] = self.smooth_w_phase
-        w[1 + 2 * nu:1 + 3 * nu] = self.smooth_w_res
-        w[1 + 3 * nu:1 + 4 * nu] = self.smooth_w_coff
+        # Heterogeneous action -> weight each GROUP separately (via the _sl_* slices,
+        # so this works for both the reduced and legacy layouts): the single freq
+        # (and duty) knob otherwise gets drowned by the per-joint terms, leaving the
+        # clock effectively unregularized.
+        w = np.empty(self.action_space.shape[0], dtype=np.float64)
+        w[self._sl_dfreq] = self.smooth_w_freq
+        if self._sl_duty is not None:
+            w[self._sl_duty] = self.smooth_w_duty
+        w[self._sl_amp] = self.smooth_w_amp
+        w[self._sl_phase] = self.smooth_w_phase
+        w[self._sl_res] = self.smooth_w_res
+        w[self._sl_coff] = self.smooth_w_coff
         return w
 
     def _get_reward(self, action):
@@ -689,7 +856,7 @@ class RodentCPGEnv(RodentRunEnv):
         base = super()._get_reward(action)
 
         nu = self.model.nu
-        res = np.abs(np.asarray(action[1 + 2 * nu:1 + 3 * nu], dtype=np.float64))
+        res = np.abs(np.asarray(action[self._sl_res], dtype=np.float64))
         if self.res_cost_mode == "avg":
             # Low-pass |residual| per joint: a brief spike barely moves the EMA, but
             # sustained "residual as locomotion" saturates it and pays every step.
@@ -724,12 +891,14 @@ class RodentCPGEnv(RodentRunEnv):
         # (114 terms) drive it -- the decomposition needed to tune smooth honestly.
         # _smooth_per_dim was stashed by _smoothness_cost during super()._get_reward.
         spd = getattr(self, "_smooth_per_dim", None)
-        if spd is not None and len(spd) == 1 + 4 * nu:
-            self._reward_terms["smooth_freq"] = float(-spd[0])
-            self._reward_terms["smooth_amp"] = float(-np.sum(spd[1:1 + nu]))
-            self._reward_terms["smooth_phase"] = float(-np.sum(spd[1 + nu:1 + 2 * nu]))
-            self._reward_terms["smooth_res"] = float(-np.sum(spd[1 + 2 * nu:1 + 3 * nu]))
-            self._reward_terms["smooth_coff"] = float(-np.sum(spd[1 + 3 * nu:1 + 4 * nu]))
+        if spd is not None and len(spd) == self.action_space.shape[0]:
+            self._reward_terms["smooth_freq"] = float(-np.sum(spd[self._sl_dfreq]))
+            if self._sl_duty is not None:
+                self._reward_terms["smooth_duty"] = float(-np.sum(spd[self._sl_duty]))
+            self._reward_terms["smooth_amp"] = float(-np.sum(spd[self._sl_amp]))
+            self._reward_terms["smooth_phase"] = float(-np.sum(spd[self._sl_phase]))
+            self._reward_terms["smooth_res"] = float(-np.sum(spd[self._sl_res]))
+            self._reward_terms["smooth_coff"] = float(-np.sum(spd[self._sl_coff]))
 
         self._reward_terms["res_cost"] = float(-res_cost)
         self._reward_terms["center_cost"] = float(-center_cost)
