@@ -152,7 +152,7 @@ class RodentRunEnv(RodentStandEnv):
     # --- velocity-command tracking (replaces the capped-forward reward) ----------
     # Each episode draws a slow sinusoidal target speed v*(t) sweeping [v_lo, v_hi]
     # with a random period in [cmd_T_lo, cmd_T_hi]; the reward is a Gaussian well of
-    # width track_sigma peaking at track_w when vx == v*. Sweeping the target forces a
+    # width sigma(v*) peaking at track_w when vx == v*. Sweeping the target forces a
     # stable, efficient gait at EVERY speed -- gait transitions then EMERGE from the
     # energy term picking the cheapest gait per speed (rather than being hand-shaped).
     v_lo = 0.1          # m/s: slowest commanded speed (stays in locomotion, not standing)
@@ -160,7 +160,16 @@ class RodentRunEnv(RodentStandEnv):
     cmd_T_lo = 20.0     # s: shortest sweep period (slow vs the ~2-4 s value horizon ->
     cmd_T_hi = 40.0     #    quasi-static, so the critic sees a ~constant target locally)
     track_w = 3.0       # peak tracking reward (matches old forward_w*cap = 5*0.6 scale)
-    track_sigma = 0.1   # m/s tolerance: an error of sigma drops the reward to ~0.6*peak
+    # SPEED-DEPENDENT tolerance sigma(v*), linear from track_sigma_lo at v_lo to
+    # track_sigma_hi at v_hi. Rationale: the standstill (vx=0) barrier equals the full
+    # command v*, so a FIXED narrow sigma leaves high commands stranded ~5 sigma out on
+    # the dead Gaussian tail (no gradient -> the SAC_16 vx~0 stall). Widening sigma with
+    # v* keeps the standstill error at ~1-1.7 sigma across the whole band (a live
+    # guiding gradient everywhere) while preserving tight low-speed precision. This is
+    # Weber-like (tolerance scales with target magnitude); anneal/tighten later for
+    # precision once it locomotes. (See DESIGN_NOTES: SAC_16 tracking-barrier fix.)
+    track_sigma_lo = 0.10   # m/s tolerance at v_lo (standstill barrier ~1.0 sigma -> steepest)
+    track_sigma_hi = 0.30   # m/s tolerance at v_hi (standstill barrier ~1.7 sigma -> still live)
 
     def _stance_gate(self, n_hand, n_foot):
         """Smooth stance-quality g in [0,1] = product of soft indicators. Uses the
@@ -311,6 +320,15 @@ class RodentRunEnv(RodentStandEnv):
         phi = getattr(self, "_cmd_phi", 0.0)
         return v_mid + v_amp * np.sin(2.0 * np.pi * self.data.time / T + phi)
 
+    def _track_sigma(self, v_star):
+        """Speed-dependent Gaussian-well width sigma(v*): linear from track_sigma_lo at
+        v_lo to track_sigma_hi at v_hi (v* clipped to the band). Wider at high speed so
+        the standstill barrier stays ~1-1.7 sigma (a live gradient); tight at low speed
+        for precision. See the track_sigma_lo/hi class-attr note."""
+        t = (float(v_star) - self.v_lo) / (self.v_hi - self.v_lo)
+        t = min(1.0, max(0.0, t))
+        return self.track_sigma_lo + t * (self.track_sigma_hi - self.track_sigma_lo)
+
     def step(self, action):
         # Record the torso's world-x BEFORE the physics substeps run, so
         # _get_reward (called at the end of super().step) can form a displacement.
@@ -395,8 +413,9 @@ class RodentRunEnv(RodentStandEnv):
         # OVERSHOOTING v* is penalized just like undershooting -> no incentive to spin
         # the legs faster than commanded (the old wheelspin), and no speed cap needed.
         v_star = self._target_speed()
+        sigma = self._track_sigma(v_star)   # speed-dependent tolerance (wide at high v*)
         r_track = self.track_w * float(np.exp(-np.square(vx - v_star)
-                                              / (2.0 * np.square(self.track_sigma))))
+                                              / (2.0 * np.square(sigma))))
         if self.gate_forward:
             # FLOOR the gate: attenuate tracking out of stance, never annihilate it,
             # so a locomotion gradient always exists (gate_floor=0 -> old hard gate).

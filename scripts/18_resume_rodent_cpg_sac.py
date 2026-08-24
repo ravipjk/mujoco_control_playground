@@ -25,9 +25,9 @@ import time
 
 from _rodent_cfg import make_cpg_env, CPG_TERM_KEYS
 
-from stable_baselines3 import SAC
 from stable_baselines3.common.callbacks import CheckpointCallback, CallbackList
 
+from robolab.utils.huber_sac import HuberSAC
 from robolab.utils.buffer import ReplayBufferSaver
 from robolab.utils.montage import LearningMontageCallback
 from robolab.utils.reward_logging import RewardTermLoggerCallback
@@ -72,20 +72,36 @@ def main():
     ap.add_argument("--save-buffer-every", type=int, default=0, metavar="N",
                     help="save the replay buffer every N steps to a rolling file so "
                          "THIS resume is itself Ctrl-C resumable. 0 = end-of-run only.")
+    ap.add_argument("--huber-delta", type=float, default=None, metavar="D",
+                    help="override the critic Huber knee for this resume (default: keep "
+                         "the value saved in the model). Raise it if you also raise gamma "
+                         "on the resume -- bigger returns -> bigger TD residuals.")
+    ap.add_argument("--no-buffer", action="store_true",
+                    help="POLICY-ONLY resume: do NOT load the saved replay buffer. Use "
+                         "when the REWARD changed (e.g. a new track_sigma): the buffer's "
+                         "stored rewards are now stale, so keep the trained weights but "
+                         "refill the buffer under the new reward (brief re-warmup).")
     args = ap.parse_args()
 
     path = args.path or newest_model()
     tag = time.strftime("%Y%m%d_%H%M%S")
 
     env = make_cpg_env()
-    # Loading with env= re-attaches spaces + resets the optimizer state that SB3
-    # persisted; the policy/critic/entropy-temperature weights come from the zip.
-    model = SAC.load(path, env=env, device="auto",
-                     tensorboard_log="outputs/tb_rodent_cpg_sac")
-    print(f"Resuming CPG-SAC from {path}")
+    # Load as HuberSAC (NOT plain SAC): the runs use the robust Huber critic loss that
+    # stops the critic divergence, and .load's CLASS decides train() -- SAC.load would
+    # silently revert the resume to MSE. huber_delta is restored from the model's saved
+    # data (or defaults to 50 for a pre-Huber zip); --huber-delta overrides it below.
+    model = HuberSAC.load(path, env=env, device="auto",
+                          tensorboard_log="outputs/tb_rodent_cpg_sac")
+    if args.huber_delta is not None:
+        model.huber_delta = float(args.huber_delta)
+    print(f"Resuming CPG-SAC from {path}  (critic=huber, delta={model.huber_delta:g})")
 
-    buf = find_buffer(path)
-    if buf:
+    buf = None if args.no_buffer else find_buffer(path)
+    if args.no_buffer:
+        print("--no-buffer: POLICY-ONLY resume (reward changed -> stale buffer skipped; "
+              "weights carry over, buffer refills under the new reward).")
+    elif buf:
         model.load_replay_buffer(buf)
         print(f"Loaded replay buffer ({model.replay_buffer.size()} transitions) "
               f"from {buf} -> SEAMLESS resume")
