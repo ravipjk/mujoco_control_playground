@@ -38,7 +38,14 @@ def make_cpg_env():
     # Q1: also gate the PERIODIC rewards by stance, so rhythm/phase pay only once
     # planted (complement to gate_res: residual is cheap OUT of stance). Together
     # this is the "recover aperiodically, then stride periodically" curriculum.
-    env.gate_rhythm = True
+    env.gate_rhythm = True   # (no-op now that rhythm/phase rewards are removed)
+    # Long-ish episodes so each spans a full slow speed-command period (T in [20,40] s):
+    # 2000 steps * ctrl_dt 0.02 = 40 s >= T_max, so even the slowest command completes
+    # one full min->max->min sweep within an episode (a full sine period covers the
+    # whole [v_lo,v_hi] excursion regardless of start phase; SAC's buffer stitches the
+    # rest). Chosen over 60 s to get MORE resets/step -> more startup-transient reps,
+    # hedging the launch-topple basin. Decoupled from gamma (0.995 -> ~4 s horizon).
+    env.episode_length = 2000
     # NOTE: this env has an AUGMENTED obs (per-paw contact force) and a SYMMETRY-
     # REDUCED action space (97-dim: dfreq, duty, amp_sym(19), phase_tied(19),
     # res(38), coff_sym(19)), so its checkpoints are NOT compatible with the older
@@ -49,8 +56,8 @@ def make_cpg_env():
 # Reward-term channels to log (each surfaced by the env in info each step).
 # smooth_{freq,amp,phase,res,coff} break the aggregate `smooth` into its action
 # groups so we can see which sub-term dominates before cutting its weight.
-CPG_TERM_KEYS = ["forward", "alive", "control_cost", "upright", "contact",
-                 "hand", "energy", "smooth", "phase", "rhythm", "res_cost",
+CPG_TERM_KEYS = ["track", "v_target", "alive", "control_cost", "upright", "contact",
+                 "hand", "energy", "smooth", "res_cost",
                  "center_cost", "bad_contacts", "hand_contacts", "foot_contacts",
                  "gate", "hand_prox", "vx",
                  "smooth_freq", "smooth_duty", "smooth_amp", "smooth_phase",

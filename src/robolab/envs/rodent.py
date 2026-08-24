@@ -91,34 +91,24 @@ class RodentRunEnv(RodentStandEnv):
                         #   + planted-forelimb center now carry the anti-skid pressure.)
     hand_w = 0.25       # BONUS per front-paw (hand) geom on the floor -- a carrot
                         #   for the missing behavior (it never planted its hands)
-    energy_w = 5e-3     # penalty per unit mechanical power (|force*vel| summed) --
-                        #   a cost-of-transport proxy. Lowered 1e-2 -> 5e-3 for
-                        #   run 5: energy+smooth together caused the "stand still"
-                        #   outcome in run 4; relieve it so movement can pay off.
+    energy_w = 0.13     # penalty per unit mechanical power (|force*vel| summed) --
+                        #   a cost-of-transport proxy. RAISED 5e-3 -> 0.13 for the
+                        #   velocity-tracking reward: at 5e-3 the penalty was ~1% of the
+                        #   reward (effectively OFF -> legs free to wheelspin). 0.13 is
+                        #   power-probe calibrated (median ~6.9 W at the old gait) so
+                        #   energy is ~30% of track_w -> it now actually selects
+                        #   efficient, low-slip gaits (min mean power == min CoT at a
+                        #   fixed commanded speed).
     smooth_w = 3e-3     # penalty per unit sum-squared action delta. Lowered
                         #   0.01 -> 3e-3 because it DIRECTLY antagonizes the new
                         #   rhythm/phase terms (smoothness punishes the very
                         #   oscillation rhythm rewards) -- at 0.01 it would just
                         #   suppress the experiment into a null result.
 
-    # --- EXPERIMENT (run 5): CPG-inspired rhythm + phase shaping ----------------
-    # Hypothesis: rewarding a trot-like phase relationship between the limb swing
-    # joints will NOT produce real locomotion -- it will be gamed. The point is to
-    # SEE the failure mode. "Phase" is inherently a property over time, but our
-    # reward is per-step, so we proxy it with the normalized correlation of limb
-    # swing-joint VELOCITIES (same sign -> in phase, opposite -> anti phase).
-    phase_w = 0.5       # weight on the trot phase-match score (normalized to [-1,1])
-    rhythm_w = 0.3      # weight on "the limbs are actually oscillating" (0..1)
-    rhythm_scale = 10.0 # rad/s scale: summed limb speed that saturates the tanh
-
-    # --- forward reward + speed cap ---------------------------------------------
-    # We want a good GAIT, not max speed. Reward forward progress linearly but
-    # SATURATE it at a biologically reasonable walk/trot speed: vx above the cap
-    # earns no extra reward, which also removes the incentive to gallop/bound (the
-    # regime where "always plant paws" shaping would fight the natural aerial
-    # phase). Backward motion (vx<0) is still penalized (min, not clip-to-0).
-    forward_w = 5.0            # weight on (capped) forward speed
-    forward_speed_cap = 0.6    # m/s; reward flat above this (~60 cm/s)
+    # (Removed with the reward re-derivation: the capped-forward reward
+    # [forward_w, forward_speed_cap] -> replaced by velocity tracking below; and the
+    # CPG-inspired rhythm/phase shaping [phase_w, rhythm_w, rhythm_scale] -> redundant
+    # with the CPG action space and the source of the max-frequency wheelspin.)
 
     # --- STANCE GATE (state-based curriculum) -----------------------------------
     # A smooth signal g in [0,1] = "how well is the rat in a supported stance?".
@@ -159,6 +149,19 @@ class RodentRunEnv(RodentStandEnv):
     # OFF by default (unchanged for non-CPG runs); make_cpg_env opts in.
     gate_rhythm = False     # if True: phase_reward, rhythm_reward *= stance ramp
 
+    # --- velocity-command tracking (replaces the capped-forward reward) ----------
+    # Each episode draws a slow sinusoidal target speed v*(t) sweeping [v_lo, v_hi]
+    # with a random period in [cmd_T_lo, cmd_T_hi]; the reward is a Gaussian well of
+    # width track_sigma peaking at track_w when vx == v*. Sweeping the target forces a
+    # stable, efficient gait at EVERY speed -- gait transitions then EMERGE from the
+    # energy term picking the cheapest gait per speed (rather than being hand-shaped).
+    v_lo = 0.1          # m/s: slowest commanded speed (stays in locomotion, not standing)
+    v_hi = 0.5          # m/s: fastest commanded speed
+    cmd_T_lo = 20.0     # s: shortest sweep period (slow vs the ~2-4 s value horizon ->
+    cmd_T_hi = 40.0     #    quasi-static, so the critic sees a ~constant target locally)
+    track_w = 3.0       # peak tracking reward (matches old forward_w*cap = 5*0.6 scale)
+    track_sigma = 0.1   # m/s tolerance: an error of sigma drops the reward to ~0.6*peak
+
     def _stance_gate(self, n_hand, n_foot):
         """Smooth stance-quality g in [0,1] = product of soft indicators. Uses the
         contact counts already computed in _get_reward (no second contact pass)."""
@@ -185,20 +188,6 @@ class RodentRunEnv(RodentStandEnv):
         z_paw = min(float(self.data.geom_xpos[g][2]) for g in self._hand_geoms)
         return float(np.clip((self.hand_z_hi - z_paw)
                              / (self.hand_z_hi - self.hand_z_lo), 0.0, 1.0))
-
-    def _swing_velocities(self):
-        """(vFL, vFR, vHL, vHR): fore-aft swing-joint velocities of the four limbs.
-
-        Forelimbs use `shoulder_*`, hindlimbs use `hip_*_extend` -- the joints whose
-        axis is the body-y (pitch) axis, i.e. the ones that swing a limb front-back.
-        """
-        if not hasattr(self, "_swing_dofs"):
-            names = ("shoulder_L", "shoulder_R", "hip_L_extend", "hip_R_extend")
-            self._swing_dofs = [self.model.jnt_dofadr[self.model.joint(n).id]
-                                for n in names]
-        qv = self.data.qvel
-        return (float(qv[self._swing_dofs[0]]), float(qv[self._swing_dofs[1]]),
-                float(qv[self._swing_dofs[2]]), float(qv[self._swing_dofs[3]]))
 
     def _floor_contact_stats(self):
         """One pass over ground contacts -> (n_bad, n_hand, n_foot).
@@ -295,6 +284,32 @@ class RodentRunEnv(RodentStandEnv):
         # the first step of a new episode isn't charged a spurious action jump.
         super()._reset_model()
         self._prev_action = None
+        # Per-episode velocity command: a slow sinusoid v*(t) the policy must TRACK.
+        # Draw the sweep CENTRE in [v_lo, v_hi]; the amplitude is then the MAXIMAL
+        # symmetric excursion that still fits the band -- the distance to the nearer
+        # edge -- so v_mid +/- v_amp stays inside [v_lo, v_hi] BY CONSTRUCTION while
+        # sweeping as wide as that centre allows (central v_mid -> full-band sweep;
+        # near-edge -> narrower, hugging that edge). Only the centre is random; wide
+        # per-episode sweeps drive walk<->trot transitions within an episode.
+        # Leading-underscore names mark these as per-episode STATE (like _phase),
+        # distinct from the fixed v_lo/v_hi/cmd_T_* knobs.
+        self._cmd_v_mid = self.np_random.uniform(self.v_lo, self.v_hi)
+        self._cmd_v_amp = min(self._cmd_v_mid - self.v_lo, self.v_hi - self._cmd_v_mid)
+        self._cmd_T = self.np_random.uniform(self.cmd_T_lo, self.cmd_T_hi)
+        self._cmd_phi = self.np_random.uniform(0.0, 2.0 * np.pi)
+
+    def _target_speed(self):
+        """Commanded forward speed v*(t) at the CURRENT sim time (the slow sinusoid whose
+        parameters were drawn this episode in _reset_model). The getattr(..., default)
+        guards the ONE construction-time call: the base __init__ builds observation_space
+        via _get_obs -> _target_speed BEFORE any reset() has drawn the command, so _cmd_*
+        don't exist yet. Defaults (amp 0 -> flat, T = cmd_T_lo -> no divide-by-zero) make
+        that early call return the mid-band speed instead of raising AttributeError."""
+        v_mid = getattr(self, "_cmd_v_mid", 0.5 * (self.v_lo + self.v_hi))
+        v_amp = getattr(self, "_cmd_v_amp", 0.0)
+        T = getattr(self, "_cmd_T", self.cmd_T_lo)
+        phi = getattr(self, "_cmd_phi", 0.0)
+        return v_mid + v_amp * np.sin(2.0 * np.pi * self.data.time / T + phi)
 
     def step(self, action):
         # Record the torso's world-x BEFORE the physics substeps run, so
@@ -374,11 +389,19 @@ class RodentRunEnv(RodentStandEnv):
         # vx" exploit and stops taxing the stand-up transient. g is also reused by
         # the CPG env to gate the residual cost.
         g = self._stance_gate(n_hand, n_foot)
-        forward = self.forward_w * min(vx, self.forward_speed_cap)  # saturate at cap
+        # Velocity-TRACKING reward (replaces the old capped-forward term): a bounded
+        # Gaussian "well" peaking at track_w when vx matches the commanded speed v*,
+        # decaying as the error grows (width track_sigma). The well is SYMMETRIC, so
+        # OVERSHOOTING v* is penalized just like undershooting -> no incentive to spin
+        # the legs faster than commanded (the old wheelspin), and no speed cap needed.
+        v_star = self._target_speed()
+        r_track = self.track_w * float(np.exp(-np.square(vx - v_star)
+                                              / (2.0 * np.square(self.track_sigma))))
         if self.gate_forward:
-            # FLOOR the gate: attenuate forward out of stance, never annihilate it,
+            # FLOOR the gate: attenuate tracking out of stance, never annihilate it,
             # so a locomotion gradient always exists (gate_floor=0 -> old hard gate).
-            forward = forward * (self.gate_floor + (1.0 - self.gate_floor) * g)
+            ramp = self.gate_floor + (1.0 - self.gate_floor) * g
+            r_track *= ramp
 
         # Cost of transport (a "biological cost" the rigid servo body doesn't pay
         # for free): mechanical power = sum |actuator_force * actuator_velocity|.
@@ -395,35 +418,15 @@ class RodentRunEnv(RodentStandEnv):
         # weightable by subclasses (the CPG env boosts the frequency knob).
         smooth_cost = self._smoothness_cost(action)
 
-        # CPG-inspired rhythm + phase (the experiment). Trot target: diagonals in
-        # phase, left-right anti phase. corr(a,b) = normalized velocity product in
-        # [-1,1] (~sign agreement); ~0 when a joint is still, so the rat MUST move
-        # its limbs to earn anything -- which is exactly what should get gamed.
-        vFL, vFR, vHL, vHR = self._swing_velocities()
-
-        def corr(a, b):
-            return (a * b) / (abs(a) * abs(b) + 1e-6)
-
-        phase_score = (corr(vFL, vHR) + corr(vFR, vHL)   # diagonals -> in phase
-                       - corr(vFL, vFR) - corr(vHL, vHR)  # L/R pairs -> anti phase
-                       ) / 4.0                            # -> [-1, 1]
-        phase_reward = self.phase_w * phase_score
-
-        speed = abs(vFL) + abs(vFR) + abs(vHL) + abs(vHR)
-        rhythm_reward = self.rhythm_w * float(np.tanh(speed / self.rhythm_scale))
-
-        if self.gate_rhythm:
-            # Q1: pay for rhythm/phase only in stance, using the SAME ramp as
-            # forward (floor -> attenuate, not annihilate, so a gradient survives).
-            # Reuses g computed above; complements the residual cost (cheap OUT of
-            # stance) so the two control modes hand off across the gate.
-            ramp = self.gate_floor + (1.0 - self.gate_floor) * g
-            phase_reward = phase_reward * ramp
-            rhythm_reward = rhythm_reward * ramp
+        # (Removed: the old CPG-inspired rhythm + phase shaping. `rhythm` rewarded raw
+        # limb SPEED, which directly drove the max-frequency wheelspin; `phase` is now
+        # guaranteed structurally by the CPG action space. Both were redundant/harmful
+        # once the reward was re-derived to {track, energy, stability}.)
 
         # Stash raw per-step components; step() copies these into `info`.
         self._reward_terms = {
-            "forward": float(forward),
+            "track": float(r_track),
+            "v_target": float(v_star),
             "alive": float(alive),
             "control_cost": float(-control_cost),
             "upright": float(upright_bonus),
@@ -431,8 +434,6 @@ class RodentRunEnv(RodentStandEnv):
             "hand": float(hand_bonus),
             "energy": float(-energy_cost),
             "smooth": float(-smooth_cost),
-            "phase": float(phase_reward),
-            "rhythm": float(rhythm_reward),
             "bad_contacts": float(n_bad),
             "hand_contacts": float(n_hand),
             "foot_contacts": float(n_foot),
@@ -440,9 +441,8 @@ class RodentRunEnv(RodentStandEnv):
             "hand_prox": float(self._front_paw_proximity()),  # front-end-down signal
             "vx": float(vx),
         }
-        return float(forward + alive - control_cost + upright_bonus
-                     - contact_cost + hand_bonus - energy_cost - smooth_cost
-                     + phase_reward + rhythm_reward)
+        return float(r_track + alive - control_cost + upright_bonus
+                     - contact_cost + hand_bonus - energy_cost - smooth_cost)
 
 
 class RodentCPGEnv(RodentRunEnv):
@@ -787,7 +787,13 @@ class RodentCPGEnv(RodentRunEnv):
         obs = np.concatenate([base, [np.sin(ph), np.cos(ph)], paws]).astype(np.float32)
         # Sensor-gain normalization: divide the velocity channels to ~unit scale so the
         # critic's inputs are well-conditioned (see obs_vel_scale / _obs_scale_vec).
-        return (obs / self._obs_scale_vec()).astype(np.float32)
+        scaled = obs / self._obs_scale_vec()
+        # Expose the (unit-normalized) commanded speed so the policy can TRACK it -- a
+        # target it can't see would make the reward non-stationary. Append AFTER the
+        # scale-divide (cmd is already ~unit) so _obs_scale_vec's length stays keyed to
+        # base+clock+paws; appending BEFORE would be a length mismatch.
+        cmd_norm = (self._target_speed() - self.v_lo) / (self.v_hi - self.v_lo)
+        return np.concatenate([scaled, [cmd_norm]]).astype(np.float32)
 
     def _reset_model(self):
         super()._reset_model()
