@@ -22,7 +22,17 @@ GATE_USE_HANDS = True
 def make_cpg_env():
     """RodentCPGEnv with the stance-gate experiment config applied."""
     env = RodentCPGEnv(XML)
-    env.gate_forward = True     # forward reward *= stance gate g
+    # LEVER A (2026-08-24): UNGATE the tracking reward. Data-proven bandaid -- the gate
+    # diagnostic (DESIGN_NOTES #5) showed the stance gate single-handedly makes STANDING
+    # out-score MOVING: it cut a moving state's track 2.37 -> 1.23 (-1.14/step), a hit
+    # bigger than the entire cost of moving (energy+res+ctrl+smooth ~= -0.72), so the
+    # policy learned to pin dfreq at MINIMUM and stand (vx~=0). Ungating restores moving's
+    # 2.37 track -> moving becomes optimal. The old anti-topple justification is now
+    # carried structurally by the SYMMETRIC tracking well (overshoot penalized) + fall
+    # termination + upright, so the track-gate is redundant. Keep gate_res=True (the
+    # residual should still be cheap while stumbling, expensive once planted); g is still
+    # computed + logged for diagnostics and the residual gate.
+    env.gate_forward = False    # was True -- track no longer multiplied by the stance gate
     env.gate_res = True         # residual cost *= g (cheap while getting up/stumbling)
     env.gate_use_hands = GATE_USE_HANDS
     # Gate FLOOR + soft hands: turn the quadruped gate from a wall (g~0 forever,
