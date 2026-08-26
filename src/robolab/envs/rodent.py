@@ -407,15 +407,26 @@ class RodentRunEnv(RodentStandEnv):
         # vx" exploit and stops taxing the stand-up transient. g is also reused by
         # the CPG env to gate the residual cost.
         g = self._stance_gate(n_hand, n_foot)
-        # Velocity-TRACKING reward (replaces the old capped-forward term): a bounded
-        # Gaussian "well" peaking at track_w when vx matches the commanded speed v*,
-        # decaying as the error grows (width track_sigma). The well is SYMMETRIC, so
-        # OVERSHOOTING v* is penalized just like undershooting -> no incentive to spin
-        # the legs faster than commanded (the old wheelspin), and no speed cap needed.
+        # Velocity-TRACKING reward (replaces the old capped-forward term): a Gaussian
+        # "well" peaking when vx matches the commanded speed v* (width track_sigma),
+        # penalizing OVERSHOOT the same as undershoot -> no incentive to spin the legs
+        # faster than commanded (the old wheelspin), no speed cap needed.
+        #
+        # ASYMMETRIC / zero-at-standstill: a plain Gaussian centred at v* still pays
+        # ~0.75-1.8 (of track_w=3) at vx=0, because vx=0 sits only ~1-1.6 sigma from v*.
+        # That freebie made STANDING a local optimum -- the SAC_16/18 runs converged to a
+        # stable standstill (ep_len 2000, dfreq pinned min, vx~0) and collected it.
+        # Fix: subtract the well's value AT vx=0, a0 = exp(-v*^2 / 2 sigma^2). Now
+        # standing pays exactly 0, vx=v* pays the peak track_w*(1-a0), and moving
+        # BACKWARD (vx<0) or OVERSHOOTING past 2v* goes NEGATIVE -- both penalized, and
+        # there is a live uphill gradient out of standstill toward v*. NOT renormalized
+        # by 1/(1-a0): that restores a fixed peak but blows up as v*->0 (a0->1); we take
+        # the sagging low-v* peak instead to avoid that amplification.
         v_star = self._target_speed()
         sigma = self._track_sigma(v_star)   # speed-dependent tolerance (wide at high v*)
-        r_track = self.track_w * float(np.exp(-np.square(vx - v_star)
-                                              / (2.0 * np.square(sigma))))
+        a0 = float(np.exp(-np.square(v_star) / (2.0 * np.square(sigma))))
+        gauss = float(np.exp(-np.square(vx - v_star) / (2.0 * np.square(sigma))))
+        r_track = self.track_w * (gauss - a0)
         if self.gate_forward:
             # FLOOR the gate: attenuate tracking out of stance, never annihilate it,
             # so a locomotion gradient always exists (gate_floor=0 -> old hard gate).

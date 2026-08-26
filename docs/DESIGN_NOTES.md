@@ -482,3 +482,46 @@ and so good ideas are parked without being started prematurely.
   and more biologically honest than paying for a proxy of it. Bandaids are the symptom of
   reaching for the reward channel when the prior channel was the right one. Audit: *reward
   the causal quantity; encode body/brain facts as structure; delete the rest.*
+
+---
+
+## 7. Asymmetric tracking reward -- kill the standstill freebie
+
+- **Date:** 2026-08-25
+- **Status:** DONE (implemented in `RodentRunEnv._get_reward`). Fresh run under way to test.
+
+**Context**
+- Ungating `track` (#5, Lever A) did NOT produce locomotion. SAC_16 (gated) and the
+  ungated SAC_18 run converged to the SAME stable standstill (ep_len 2000, `dfreq`
+  pinned at min, `vx~=0`); their TB traces were near-identical except the `track`
+  *number*. That falsifies "the gate created the standstill basin."
+- Root cause: a plain Gaussian well centred at `v*` pays real credit AT `vx=0`, because
+  `vx=0` sits only ~1-1.6 sigma from `v*`. Measured freebie: `track~=0.75-1.8` of 3 for
+  ZERO effort (worst at low `v*`, where the well is closest to 0). Gated or ungated,
+  standing collected it -> STANDING was a local optimum. The gate only ever docked
+  *moving*, never *standing*, so removing it changed scoring, not the basin.
+- Corollary: the earlier "wider sigma / sum-of-two-Gaussians" idea would BACKFIRE -- a
+  wider shoulder pumps MORE credit into `vx=0`, feeding the freebie. Capture range and
+  no-freebie pull sigma in opposite directions; a symmetric well centred at `v*` can't win both.
+
+**Decision**
+- Make `track` ASYMMETRIC / zero-at-standstill by subtracting the well's own value at
+  `vx=0`:  `r_track = track_w * (exp(-(vx-v*)^2/2s^2) - a0)`, `a0 = exp(-v*^2/2s^2)`.
+  Now `vx=0 -> 0`, peak `track_w*(1-a0)` at `v*`, and moving BACKWARD (`vx<0`) or
+  OVERSHOOTING past `2v*` goes NEGATIVE (both penalized). Live uphill gradient off standstill.
+- NOT renormalized by `1/(1-a0)`: that restores a fixed peak but blows up as `v*->0`
+  (`a0->1`). Accept the gently sagging low-`v*` peak (`track_w*(1-a0)`) to avoid the
+  amplification. F/B/P: the symmetric well's fat tail at 0 was an accidental free lunch
+  (a **B** artifact on the **F** objective); this deletes it without adding a bandaid.
+- Two-part trap named: (i) the freebie (local optimum) + (ii) a "stumbling valley"
+  (stance->walk goes downhill first via slip/`res` cost). Zeroing the freebie tilts BOTH
+  -- partial forward motion now out-scores standing, turning the barrier into a gradient.
+
+**Revisit when**
+- Fresh run is the clean test (all prior runs used the freebie reward): does the
+  corrected reward, from scratch, produce a gait? Watch `track` going POSITIVE (moving)
+  vs hovering ~0 (parked), and `vx` lifting off 0. If it still parks, the freebie wasn't
+  the whole story (look harder at the stumbling valley / exploration).
+- If a resume from the good-stance model is tried instead, pair with an `--ent-coef`
+  re-warm: the parked policy is near-deterministic (alpha~=0.006) and must be pushed to
+  sample the forward motions that feel the new gradient.
