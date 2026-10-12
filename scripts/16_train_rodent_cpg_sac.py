@@ -105,7 +105,7 @@ def main():
         learning_rate=args.lr,
         buffer_size=300_000,
         learning_starts=10_000,
-        batch_size=256,
+        batch_size=512,
         tau=0.005,
         # Discount factor from --gamma (default 0.99 -> ~2 s horizon). Try --gamma 0.999
         # (~20 s = whole episode) to make the full future alive+forward stream count, so
@@ -125,7 +125,7 @@ def main():
         #      a hard pin). Set target via --target-entropy; pin alpha via --ent-coef.
         ent_coef=ent_coef,
         target_entropy=target_entropy,
-        policy_kwargs=dict(net_arch=[256, 256]),
+        policy_kwargs=dict(net_arch=[512, 512]),
         verbose=1,
         device="auto",
         tensorboard_log="outputs/tb_rodent_cpg_sac",

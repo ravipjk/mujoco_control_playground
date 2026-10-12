@@ -89,7 +89,7 @@ class RodentRunEnv(RodentStandEnv):
                         #   locomotion isn't drowned. (The old "0.5 too soft -> migrated
                         #   the skid" was the pre-gate direct-action env; the stance gate
                         #   + planted-forelimb center now carry the anti-skid pressure.)
-    hand_w = 0.25       # BONUS per front-paw (hand) geom on the floor -- a carrot
+    hand_w = 0.0       # BONUS per front-paw (hand) geom on the floor -- a carrot
                         #   for the missing behavior (it never planted its hands)
     energy_w = 0.13     # penalty per unit mechanical power (|force*vel| summed) --
                         #   a cost-of-transport proxy. RAISED 5e-3 -> 0.13 for the
@@ -159,7 +159,7 @@ class RodentRunEnv(RodentStandEnv):
     v_hi = 0.5          # m/s: fastest commanded speed
     cmd_T_lo = 20.0     # s: shortest sweep period (slow vs the ~2-4 s value horizon ->
     cmd_T_hi = 40.0     #    quasi-static, so the critic sees a ~constant target locally)
-    track_w = 3.0       # peak tracking reward (matches old forward_w*cap = 5*0.6 scale)
+    track_w = 5.0       # peak tracking reward (matches old forward_w*cap = 5*0.6 scale)
     # SPEED-DEPENDENT tolerance sigma(v*), linear from track_sigma_lo at v_lo to
     # track_sigma_hi at v_hi. Rationale: the standstill (vx=0) barrier equals the full
     # command v*, so a FIXED narrow sigma leaves high commands stranded ~5 sigma out on
@@ -389,9 +389,9 @@ class RodentRunEnv(RodentStandEnv):
         # locomotion. Rebalanced so forward out-pays standing, and shrinking the
         # posture terms because TERMINATION already forces upright (xmat[8]>0.5)
         # and height>0.03 -- so we don't need to also *pay* for posture.
-        alive = 0.5                                          # was 1.0 (a floor, not the payout)
-        control_cost = 0.001 * np.sum(np.square(action))
-        upright_bonus = 0.2 * self.data.body("torso").xmat[8]  # was 1.0 (mostly rewarded posing)
+        alive = 0.0                                          # was 1.0 (a floor, not the payout)
+        control_cost = 0.000 * np.sum(np.square(action))
+        upright_bonus = 0.0 * self.data.body("torso").xmat[8]  # was 1.0 (mostly rewarded posing)
 
         # Contact shaping. n_bad = non-paw geoms on the floor (the skid cheat);
         # n_hand = front paws on the floor (the missing behavior). Run 3 showed a
@@ -425,7 +425,7 @@ class RodentRunEnv(RodentStandEnv):
         v_star = self._target_speed()
         sigma = self._track_sigma(v_star)   # speed-dependent tolerance (wide at high v*)
         a0 = float(np.exp(-np.square(v_star) / (2.0 * np.square(sigma))))
-        gauss = float(np.exp(-np.square(vx - v_star) / (2.0 * np.square(sigma))))
+        gauss = float(np.exp(-np.square(vx - v_star) / (2.0 * np.square(sigma)))) + float(np.exp(-np.square(vx - v_star) / (2.0 * np.square(sigma / 4.0))))
         r_track = self.track_w * (gauss - a0)
         if self.gate_forward:
             # FLOOR the gate: attenuate tracking out of stance, never annihilate it,
@@ -518,11 +518,11 @@ class RodentCPGEnv(RodentRunEnv):
     # tempo swings, but no longer dominates the return); per-joint 3e-3 -> 1.5e-3
     # (they directly antagonize the rhythm/phase reward). Watch smooth_freq + tempo
     # next run for jitter now that the fixed-alpha fix should calm the action noise.
-    smooth_w_freq = 1.0     # weight on the (normalized) frequency-knob delta (was 2.0)
-    smooth_w_duty = 1.0     # weight on the (normalized) duty/warp-knob delta (slow, like freq)
-    smooth_w_amp = 1.5e-3   # per-joint amplitude delta (was 3e-3)
-    smooth_w_phase = 1.5e-3 # per-joint phase-offset delta (was 3e-3)
-    smooth_w_res = 1.5e-3   # per-joint residual delta (was 3e-3)
+    smooth_w_freq = 0.5     # weight on the (normalized) frequency-knob delta (was 2.0)
+    smooth_w_duty = 0.5     # weight on the (normalized) duty/warp-knob delta (slow, like freq)
+    smooth_w_amp = 0.01   # per-joint amplitude delta (was 3e-3)
+    smooth_w_phase = 0.0 # per-joint phase-offset delta (was 3e-3)
+    smooth_w_res = 0.01   # per-joint residual delta (was 3e-3)
 
     # --- SYMMETRY-REDUCED ACTION SPACE (bilateral change of basis) --------------
     # The 153-dim action (1 + 4*38) drove the SAC critic to over-estimate and
@@ -634,7 +634,7 @@ class RodentCPGEnv(RodentRunEnv):
             self._obs_scale = scale
         return self._obs_scale
 
-    def __init__(self, xml_path, cpg_f_base=3.0, cpg_f_range=2.0,
+    def __init__(self, xml_path, cpg_f_base=1.5, cpg_f_range=1.5,
                  cpg_amp_gain=0.6, cpg_res_gain=0.2, **kwargs):
         self._phase = 0.0  # exists before super().__init__ calls _get_obs()
         super().__init__(xml_path, **kwargs)
